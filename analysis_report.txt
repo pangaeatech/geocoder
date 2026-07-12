@@ -1,0 +1,166 @@
+================================================================================
+GEOCODING PROOF OF CONCEPT - DETAILED ANALYSIS REPORT
+================================================================================
+
+EXECUTIVE SUMMARY
+----------------------------------------
+Total Records Processed: 718
+Successful Geocodes: 715 (99.6%)
+Failed Geocodes: 3 (0.4%)
+Average Accuracy Score: 91.3/100
+
+LOCATION TYPE DISTRIBUTION (Accuracy Indicator)
+----------------------------------------
+ROOFTOP:            Exact building location (most accurate)
+RANGE_INTERPOLATED: Estimated between two precise points
+GEOMETRIC_CENTER:   Center of a route/polygon
+APPROXIMATE:        City/ZIP centroid (least accurate)
+
+  ROOFTOP               640 ( 89.5%) ############################################
+  RANGE_INTERPOLATED     10 (  1.4%) 
+  GEOMETRIC_CENTER       19 (  2.7%) #
+  APPROXIMATE            46 (  6.4%) ###
+
+ACCURACY SCORE DISTRIBUTION
+----------------------------------------
+Score 90-100: High confidence - exact or near-exact location
+Score 70-89:  Good confidence - minor uncertainty
+Score 50-69:  Moderate confidence - street-level accuracy
+Score 20-49:  Low confidence - area-level only
+Score 0-19:   Very low confidence - manual review needed
+
+  90-100    630 ( 88.1%) ############################################
+  70-89      20 (  2.8%) #
+  50-69       6 (  0.8%) 
+  20-49      13 (  1.8%) 
+  0-19       46 (  6.4%) ###
+
+RECOMMENDATIONS BY CONFIDENCE LEVEL
+----------------------------------------
+  Auto-accept (90-100):   630 records (88.1%)
+  Light review (50-89):    26 records (3.6%)
+  Manual review (0-49):    59 records (8.3%)
+
+DATA QUALITY ISSUES IDENTIFIED
+----------------------------------------
+
+PO Box Addresses: 37 records
+  Description: Cannot be geocoded to a physical location - resolve to city/zip centroid
+  Examples:
+    VANID 100676182:
+      Input:  PO Box 1019, Pendleton, SC, 29670-862, United States
+      Result: Pendleton, SC, USA
+    VANID 100685757:
+      Input:  PO Box 1106, Beaufort, SC, 29901-1106, United States
+      Result: Beaufort, SC, USA
+    VANID 102700046:
+      Input:  PO Box 11412, Columbia, SC, 29211-1412, United States
+      Result: Columbia, SC, USA
+
+Missing Street Number: 16 records
+  Description: Address has street name but no number - can only geocode to street/city level
+  Examples:
+    VANID 102978282:
+      Input:  11103 Leben Pl, Simpsonville, SC, 29680-8144, United States
+      Result: Simpsonville, SC, USA
+    VANID 100668403:
+      Input:  118 Stornoway St, Bennettsville, SC, 29512-3042, United States
+      Result: Bennettsville, SC 29512, USA
+    VANID 100666190:
+      Input:  1669 Notre Dame Rd, Rear, Ninety Six, SC, 29666, United States
+      Result: Ninety Six, SC 29666, USA
+
+Missing Street Name: 1 records
+  Description: Only has a number without street name - cannot determine location
+  Examples:
+    VANID 100662078:
+      Input:  1593, Rock Hill, SC, 29732, United States
+      Result: Rock Hill, SC 29732, USA
+
+Partial Address Match: 14 records
+  Description: Google found a match but not for the exact address provided
+  Examples:
+    VANID 100670024:
+      Input:  109 SEAPINE Ln, Pawleys Is, SC, 29585, United States
+      Result: Pawleys Island, South Carolina 29585, USA
+    VANID 100680207:
+      Input:  1201 Carolina Place Dr, Ste 101, Fort Mill, SC, 29708-15, United State
+      Result: 1201 Carolina Pl #101, Fort Mill, SC 29708, USA
+    VANID 100665430:
+      Input:  127 LAK MALLARD Blvd, Mt Pleasant, SC, United States
+      Result: Lake Mallard Blvd, Mt Pleasant, SC 29464, USA
+
+Interpolated Location: 10 records
+  Description: Location estimated between two known points (less precise than rooftop)
+  Examples:
+    VANID 100687467:
+      Input:  1024 Chester Rd, Blythewood, SC, 29016-8337, United States
+      Result: 1024 Chester Rd, Blythewood, SC 29016, USA
+    VANID 100667932:
+      Input:  1702 WESTCHESTER Dr, Charleston, SC, United States
+      Result: 1702 N Westchester Dr, Charleston, SC 29414, USA
+    VANID 100690623:
+      Input:  1924 Shore Ln, Myrtle Beach, SC, 29575-5324, United States
+      Result: 1924 Shore Ln, Myrtle Beach, SC 29575, USA
+
+API/Network Errors: 3 records
+  Description: Request failed due to technical issues
+  Examples:
+    VANID 100677055:
+      Input:  10 Hidden Hills Ct, Greenville, SC, 29605-3298, United States
+      Result: This IP, site or mobile application is not authorized to use this API 
+    VANID 100673535:
+      Input:  244 Dutton St, Orangeburg, SC, 29115-5038, United States
+      Result: ('Connection aborted.', ConnectionResetError(10054, 'An existing conne
+    VANID 100663295:
+      Input:  3972 Grousewood, New Zion, SC, 29111, United States
+      Result: ('Connection aborted.', ConnectionResetError(10054, 'An existing conne
+
+Invalid/Unusual Address: 1 records
+  Description: Address format is unusual or contains invalid data
+  Examples:
+    VANID 100684172:
+      Input:  N/A N/A, Chapin, SC, 29036, United States
+      Result: North Dr, Lake Murray of Richland, SC 29036, USA
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+1. EXCELLENT OVERALL ACCURACY: 88.1% of addresses geocoded with high confidence (90-100 score)
+
+2. PO BOX LIMITATION: 37 records (5.2%) are PO Boxes which cannot be geocoded to physical locations. These resolve to city/ZIP centroids.
+
+3. INCOMPLETE ADDRESS DATA: 17 records (2.4%) have missing street numbers or names. Consider data cleaning before geocoding.
+
+4. INVALID ADDRESS FORMATS: 1 records contain placeholder or invalid data (e.g., 'N/A N/A'). These need manual correction.
+
+5. HIGH PRECISION RATE: 89.5% of successful geocodes achieved ROOFTOP precision (exact building location)
+
+================================================================================
+ACCURACY FEEDBACK MECHANISM (Requirement 3)
+================================================================================
+
+Google's Geocoding API provides the following accuracy indicators:
+
+1. LOCATION_TYPE (Primary Indicator)
+   - ROOFTOP: Exact address, building-level precision
+   - RANGE_INTERPOLATED: Interpolated between street addresses
+   - GEOMETRIC_CENTER: Center of street/region
+   - APPROXIMATE: City/ZIP/state centroid only
+
+2. PARTIAL_MATCH Flag
+   - True: Google couldn't match the exact address provided
+   - May indicate misspellings, wrong city/state, etc.
+
+3. RESULT_TYPES
+   - 'street_address': Most precise (specific building)
+   - 'route': Street-level only
+   - 'locality': City-level only
+   - 'postal_code': ZIP code centroid
+
+RECOMMENDED THRESHOLDS FOR MANUAL REVIEW:
+   - Score < 50: ALWAYS requires manual review
+   - Score 50-69: Flag for review if address is critical
+   - Score 70-89: Generally acceptable, spot-check recommended
+   - Score >= 90: Can be auto-accepted for most use cases
