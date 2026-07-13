@@ -1,0 +1,144 @@
+======================================================================
+OPENSTREETMAP NOMINATIM GEOCODING - ANALYSIS REPORT
+======================================================================
+
+## SUMMARY
+----------------------------------------
+Total addresses processed: 718
+
+Match Type Distribution:
+  ROOFTOP                  :  383 ( 53.3%)
+  NO_MATCH                 :  282 ( 39.3%)
+  SKIPPED                  :   37 (  5.2%)
+  RANGE_INTERPOLATED       :    8 (  1.1%)
+  UNKNOWN                  :    6 (  0.8%)
+  APPROXIMATE              :    2 (  0.3%)
+
+Geocoding Success Rate (excl. PO Boxes): 57.4%
+  - High precision (ROOFTOP): 383
+  - Medium precision (RANGE_INTERPOLATED): 8
+
+## CONFIDENCE ANALYSIS
+----------------------------------------
+Confidence Distribution (matched addresses only):
+  90-100%:  383 ( 96.0%)
+  70-89%:    8 (  2.0%)
+  50-69%:    0 (  0.0%)
+  30-49%:    8 (  2.0%)
+  0-29%:    0 (  0.0%)
+
+## OSM CLASSIFICATION
+----------------------------------------
+OSM Class Distribution (top 5):
+  place: 287
+  building: 76
+  highway: 28
+  amenity: 3
+  boundary: 2
+
+OSM Type Distribution (top 5):
+  house: 294
+  detached: 35
+  yes: 27
+  residential: 20
+  secondary: 4
+
+## NO MATCH ANALYSIS
+----------------------------------------
+Total NO_MATCH results: 282
+
+Patterns identified in failed geocodes:
+  apartment_unit           :  282
+  lot_number               :    3
+  non_standard_address     :    3
+
+## EXAMPLES OF FAILED GEOCODES
+----------------------------------------
+
+APARTMENT UNIT (282 cases):
+  - 10 Highbourne Ct, Columbia, SC, 29204, United States...
+  - 100 Elders Pond Cir, Columbia, SC, 29229, United States...
+  - 100 Gail Ct, Apt 43, Seneca, SC, 29672, United States...
+
+LOT NUMBER (3 cases):
+  - 1440 N Matthews Rd, Lot 4, Lake City, SC, 29560, United States...
+  - 255 W Martin Luther King Blvd, Unit 216, Charlotte, NC, 28202, United ...
+  - 5820 Carmel Rd, # 26, Charlotte, NC, 28226, United States...
+
+NON STANDARD ADDRESS (3 cases):
+  - 301 Kirkland Private Dr, Greenback, TN, 37742, United States...
+  - 642 State Road S-26-530, Murrells Inlet, SC, 29576, United States...
+  - County Road S-22-266, Pawleys Island, SC, 29585, United States...
+
+## ADDRESS STANDARDIZATION NOTES
+----------------------------------------
+City name discrepancies found: 35
+Examples:
+  - Input: GREENVILLE -> Returned: GANTT
+  - Input: GREENVILLE -> Returned: MAULDIN
+  - Input: GREENVILLE -> Returned: TAYLORS
+  - Input: SAINT STEPHEN -> Returned: ST. STEPHEN
+  - Input: CHARLESTON -> Returned: JAMES ISLAND
+
+State discrepancies found: 25
+Examples:
+  - Input: WA -> Returned: WASHINGTON
+  - Input: NC -> Returned: NORTH CAROLINA
+  - Input: DC -> Returned: DISTRICT OF COLUMBIA
+  - Input: LA -> Returned: LOUISIANA
+  - Input: VA -> Returned: VIRGINIA
+
+## ACCURACY FEEDBACK RECOMMENDATIONS
+----------------------------------------
+
+Based on the analysis, the following accuracy indicators are recommended:
+
+1. HIGH CONFIDENCE (90%+):
+   - OSM type: 'house', 'building', 'apartments'
+   - OSM class: 'place', 'building'
+   - These represent building-level geocodes
+
+2. MEDIUM CONFIDENCE (70-89%):
+   - OSM type: 'residential', 'road', 'street'
+   - OSM class: 'highway'
+   - These are street-level interpolations
+
+3. LOW CONFIDENCE (30-69%):
+   - OSM type: 'postcode', 'suburb', 'neighbourhood'
+   - These represent area-level geocodes
+
+4. VERY LOW CONFIDENCE (<30%):
+   - OSM type: 'city', 'town', 'administrative'
+   - OSM class: 'boundary'
+   - These are city/county centroids, NOT address-level
+
+5. NO MATCH:
+   - Address not found in OSM database
+   - Common causes: new subdivisions, apartment complexes,
+     unusual street naming, PO Boxes
+
+
+## ISSUES & LIMITATIONS IDENTIFIED
+----------------------------------------
+
+1. HIGH NO_MATCH RATE (39.3%):
+   - Many SC addresses not in OSM database
+   - Newer subdivisions/developments missing
+   - Rural addresses poorly covered
+
+2. APARTMENT/UNIT ADDRESSES:
+   - OSM doesn't handle apartment numbers well
+   - Often returns street-level instead of unit-level
+
+3. RATE LIMITING:
+   - 1 request/second makes bulk geocoding slow
+   - 718 addresses took ~17 minutes
+   - 1 million addresses would take ~11.5 days
+
+4. NO BATCH API:
+   - Each address requires separate HTTP request
+   - No bulk/batch endpoint available
+
+5. DATA QUALITY VARIES:
+   - Urban areas better covered than rural
+   - Some streets missing house numbers
