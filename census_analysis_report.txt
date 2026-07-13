@@ -1,0 +1,95 @@
+======================================================================
+CENSUS BATCH GEOCODING - PROOF OF CONCEPT REPORT
+======================================================================
+
+SUMMARY STATISTICS
+----------------------------------------
+Total Records Processed: 718
+Processing Time: 15.70 seconds
+
+MATCH BREAKDOWN
+----------------------------------------
+Exact Matches:        592 (82.5%)
+Non-Exact Matches:     39 (5.4%)
+Ties:                   5 (0.7%)
+No Match:              82 (11.4%)
+----------------------------------------
+OVERALL MATCH RATE: 87.9%
+
+ACCURACY ASSESSMENT (Requirement 3)
+----------------------------------------
+The Census Geocoder provides clear accuracy feedback through:
+
+1. MATCH STATUS:
+   - Match: Address was successfully geocoded
+   - No_Match: Address could not be matched
+   - Tie: Multiple possible matches exist
+
+2. MATCH TYPE (for matched addresses):
+   - Exact: Perfect match to TIGER/Line database
+   - Non_Exact: Match found but with corrections applied
+
+3. STANDARDIZED ADDRESS:
+   - Returns the official USPS-standardized address format
+   - Allows comparison with original input to see corrections
+
+ADDRESS STANDARDIZATION (Requirement 2)
+----------------------------------------
+Addresses with standardization corrections: 39
+
+Example corrections:
+  1. Original:     118 Stornoway St, Bennettsville, SC 29512
+     Standardized: 118 STORNAWAY ST, BENNETTSVILLE, SC, 29512
+
+  2. Original:     4001 Pelham Rd Apt 294, Greer, SC 29650
+     Standardized: 4001 PELHAM CT, GREER, SC, 29650
+
+  3. Original:     108 Foggy Meadow Ln, Fort Mill, SC 29708
+     Standardized: 108 FOGGY MEADOW DR, FORT MILL, SC, 29708
+
+  4. Original:     561 Commonwealth Rd, Mt Pleasant, SC 29466
+     Standardized: 561 COMMONWEALTH DR, MT PLEASANT, SC, 29466
+
+  5. Original:     305 Thornbush Ct Greer SC, Greer, SC 29651
+     Standardized: 305 THORNBUSH CT, GREER, SC, 29651
+
+ADDRESS ISSUES IDENTIFIED
+----------------------------------------
+PO Box addresses (cannot be geocoded):    38
+Missing street numbers:                   7
+Total unmatched addresses:                82
+Addresses with ties (need manual review): 5
+
+Sample of unmatched addresses:
+  - PO Box 214, Blythewood, SC 29016
+  - PO Box 514, Jefferson, SC 29718
+  - 3972 Grousewood, New Zion, SC 29111
+  - 1593, Rock Hill, SC 29732
+  - PO Box 372, Pawleys Island, SC 29585
+  - PO Box 1515, Hartsville, SC 29551
+  - PO Box 1735, Aiken, SC 29802
+  - 3011 Eventide Dr, Johns Island, SC 29455
+  - PO Box 445, Bath, SC 29816
+  - 127 LAK MALLARD Blvd, Mt Pleasant, SC 
+
+RECOMMENDATIONS
+----------------------------------------
+1. Exact matches (score 100): Can be used directly with high confidence
+2. Non-exact matches (score 70): Review standardized address vs original
+3. Ties (score 30): Require manual review to select correct match
+4. No matches (score 0): Need address correction or alternative geocoder
+
+THRESHOLD RECOMMENDATIONS:
+- Score >= 70: Acceptable for automated processing
+- Score 30-69: Flag for review
+- Score < 30: Requires manual intervention or alternate service
+
+CENSUS API NOTES
+----------------------------------------
+- Batch size limit: 10,000 records
+- For 1M records: 100 batches required
+- Cost: FREE (no usage fees)
+- Rate limits: Reasonable for batch processing
+- Coverage: US addresses only (including PR and territories)
+
+======================================================================
