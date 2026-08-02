@@ -31,12 +31,18 @@ CANONICAL_FIELDS = [
 ]
 
 COLUMN_SYNONYMS = {
-    "ID": ["id", "facility id"],
+    "ID": ["id", "facility id", "locationid", "location id"],
     "NAME": ["name", "facility name"],
     "ADDRESS": ["address", "street address"],
     "CITY": ["city"],
-    "STATEPROV": ["state", "province", "state/province"],
-    "POSTALCODE": ["zipcode", "zip code", "postal code"],
+    "STATEPROV": [
+        "state",
+        "province",
+        "state/province",
+        "stateprovince",
+        "state province",
+    ],
+    "POSTALCODE": ["zipcode", "zip code", "postal code", "postalcode"],
     "COUNTRY": ["country"],
     "LATITUDE": ["lat", "latitude"],
     "LONGITUDE": ["lng", "longitude"],
