@@ -313,12 +313,12 @@ def test_main_outfile_exists(tmp_path):
 
 
 def test_main_unknown_api(tmp_path):
-    """An api with no registered provider exits cleanly (Foundation state)."""
+    """An api with no registered provider exits cleanly."""
     infile = tmp_path / "in.xlsx"
     _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A", "T", "CA"]]})
 
     with pytest.raises(SystemExit):
-        main([str(infile), str(tmp_path / "out.xlsx"), "--api", "census"])
+        main([str(infile), str(tmp_path / "out.xlsx"), "--api", "nonexistent"])
 
 
 def test_main_runs_registered_provider(tmp_path):
@@ -343,3 +343,134 @@ def test_write_output_sheet_length_mismatch_raises():
     records = [SourceRecord(internal_key=0, address="1 A St")]
     with pytest.raises(ValueError):
         write_output_sheet(openpyxl.Workbook(), "S", records, [], "mock", False)
+
+
+class _FakeResponse:
+    """Stands in for a requests.Response so provider tests avoid the network."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        """Mimics a successful response by never raising."""
+
+
+CENSUS_RESPONSE = (
+    '"2","1 Main St, Anytown, CA","Tie"\r\n'
+    '"0","1600 Pennsylvania Ave NW, Washington, DC, 20500","Match","Exact",'
+    '"1600 PENNSYLVANIA AVE NW, WASHINGTON, DC, 20500","-77.03535,38.898754",'
+    '"76225813","L","11","001","980000","1034"\r\n'
+    '"1","Nowhere St, Nowhere, ZZ","No_Match"\r\n'
+)
+
+
+def test_census_registered():
+    """@register("census") wires CensusProvider into the registry."""
+    assert geocoder.PROVIDERS["census"] is geocoder.CensusProvider
+
+
+def test_census_parses_batch(monkeypatch):
+    """A batch response is parsed and aligned to records by internal key."""
+    captured = {}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        captured.update(url=url, data=data, files=files, timeout=timeout)
+        return _FakeResponse(CENSUS_RESPONSE)
+
+    monkeypatch.setattr(geocoder.requests, "post", fake_post)
+
+    records = [
+        SourceRecord(
+            internal_key=0,
+            address="1600 Pennsylvania Ave NW",
+            city="Washington",
+            stateprov="DC",
+            postalcode="20500",
+        ),
+        SourceRecord(
+            internal_key=1, address="Nowhere St", city="Nowhere", stateprov="ZZ"
+        ),
+        SourceRecord(
+            internal_key=2, address="1 Main St", city="Anytown", stateprov="CA"
+        ),
+    ]
+
+    results = geocoder.CensusProvider().geocode(records)
+
+    assert captured["url"] == geocoder.CensusProvider.ENDPOINT
+    assert captured["data"]["benchmark"] == "Public_AR_Current"
+    assert captured["data"]["vintage"] == "Current_Current"
+
+    exact = results[0]
+    assert exact.match_type == "exact"
+    assert exact.accuracy == 100
+    assert exact.result_address == "1600 PENNSYLVANIA AVE NW"
+    assert exact.result_city == "WASHINGTON"
+    assert exact.result_stateprov == "DC"
+    assert exact.result_postalcode == "20500"
+    assert exact.longitude == "-77.03535"
+    assert exact.latitude == "38.898754"
+    assert exact.location_type == ""
+    assert exact.result_id == ""
+
+    assert results[1].match_type == "no_match"
+    assert results[1].accuracy == 0
+    assert results[1].match_notes == "No match"
+
+    assert results[2].match_type == "tie"
+    assert results[2].accuracy == 30
+    assert results[2].match_notes == "Tie"
+
+
+def test_census_builds_csv_input(monkeypatch):
+    """The posted CSV carries the internal key and address components."""
+    captured = {}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        captured["csv"] = files["addressFile"][1]
+        return _FakeResponse('"0","1 Main St, Town, CA","No_Match"\r\n')
+
+    monkeypatch.setattr(geocoder.requests, "post", fake_post)
+
+    records = [
+        SourceRecord(
+            internal_key=0,
+            address="1 Main St",
+            city="Town",
+            stateprov="CA",
+            postalcode="90210",
+        )
+    ]
+    geocoder.CensusProvider().geocode(records)
+
+    assert captured["csv"].startswith("0,")
+    assert "1 Main St" in captured["csv"]
+    assert "90210" in captured["csv"]
+
+
+def test_main_runs_census_provider(tmp_path, monkeypatch):
+    """--api census runs end to end and writes the census result columns."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(
+        infile, {"S": [["Address", "City", "State"], ["1 Main St", "Town", "CA"]]}
+    )
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        return _FakeResponse(
+            '"0","1 Main St, Town, CA","Match","Exact",'
+            '"1 MAIN ST, TOWN, CA, 90210","-118.0,34.0",'
+            '"1","L","06","037","1","1"\r\n'
+        )
+
+    monkeypatch.setattr(geocoder.requests, "post", fake_post)
+
+    main([str(infile), str(outfile), "--api", "census"])
+
+    sheet = openpyxl.load_workbook(outfile)["S"]
+    header = [cell.value for cell in sheet[1]]
+    values = dict(zip(header, [cell.value for cell in sheet[2]]))
+    assert values["GEOCODER_API"] == "census"
+    assert values["RESULT_LATITUDE"] == "34.0"
+    assert values["RESULT_LONGITUDE"] == "-118.0"
+    assert values["MATCH_TYPE"] == "exact"
