@@ -13,10 +13,10 @@ import json
 import openpyxl
 import pytest
 
-import api
-import geocoder
-from api import GeocodeResult, Provider, SourceRecord
-from geocoder import detect_columns, main, process_workbook, write_output_sheet
+from src import api
+from src import geocoder
+from src.api import GeocodeResult, Provider, SourceRecord
+from src.geocoder import detect_columns, main, process_workbook, write_output_sheet
 
 
 class MockProvider(Provider):
@@ -120,9 +120,7 @@ def test_process_workbook_end_to_end(tmp_path):
     assert result.sheetnames == ["Sheet1"]
     sheet = result["Sheet1"]
     header = [cell.value for cell in sheet[1]]
-    assert header == (
-        geocoder.SOURCE_HEADERS + geocoder.RESULT_HEADERS + geocoder.META_HEADERS
-    )
+    assert header == (geocoder.SOURCE_HEADERS + geocoder.RESULT_HEADERS + geocoder.META_HEADERS)
     assert geocoder.DEBUG_HEADER not in header
     row = [cell.value for cell in sheet[2]]
     values = dict(zip(header, row))
@@ -222,9 +220,7 @@ def test_unknown_worksheet_raises(tmp_path):
     """Naming a worksheet that does not exist raises SystemExit."""
     infile = tmp_path / "in.xlsx"
     outfile = tmp_path / "out.xlsx"
-    _make_workbook(
-        infile, {"One": [["Address", "City", "State"], ["1 A St", "T", "CA"]]}
-    )
+    _make_workbook(infile, {"One": [["Address", "City", "State"], ["1 A St", "T", "CA"]]})
 
     with pytest.raises(SystemExit):
         process_workbook(str(infile), str(outfile), MockProvider(), worksheet="Nope")
@@ -284,9 +280,7 @@ def test_main_runs_registered_provider(tmp_path):
     """A registered provider runs end to end and writes the output file."""
     infile = tmp_path / "in.xlsx"
     outfile = tmp_path / "out.xlsx"
-    _make_workbook(
-        infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]}
-    )
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
 
     api.PROVIDERS["mock"] = MockProvider
     try:

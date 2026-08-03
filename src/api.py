@@ -93,9 +93,7 @@ class Provider(ABC):
     def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
         """Returns one GeocodeResult per input record, in the same order."""
 
-    def _request_with_retry(
-        self, send: Callable[[], requests.Response]
-    ) -> requests.Response:
+    def _request_with_retry(self, send: Callable[[], requests.Response]) -> requests.Response:
         """
         Calls send(), retrying transient failures with a linear backoff.
 

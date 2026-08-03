@@ -15,7 +15,7 @@ from typing import Dict, List, Optional
 
 from openpyxl import Workbook, load_workbook
 
-from api import (
+from .api import (
     KEY_ENV_VARS,
     PROVIDERS,
     GeocodeResult,
@@ -117,11 +117,7 @@ def detect_columns(header_cells) -> Dict[str, int]:
     mapping : Dict[str, int]
         Each canonical field name mapped to its column index in the row.
     """
-    synonym_to_field = {
-        synonym: field_name
-        for field_name, synonyms in COLUMN_SYNONYMS.items()
-        for synonym in synonyms
-    }
+    synonym_to_field = {synonym: field_name for field_name, synonyms in COLUMN_SYNONYMS.items() for synonym in synonyms}
 
     mapping = {}
     for index, value in enumerate(header_cells):
@@ -133,9 +129,7 @@ def detect_columns(header_cells) -> Dict[str, int]:
     return mapping
 
 
-def read_sheet_records(
-    rows, column_map: Dict[str, int], sheet_name: str, country_per_sheet: bool
-) -> List[SourceRecord]:
+def read_sheet_records(rows, column_map: Dict[str, int], sheet_name: str, country_per_sheet: bool) -> List[SourceRecord]:
     """
     Builds SourceRecords from the data rows of a worksheet.
 
@@ -163,9 +157,7 @@ def read_sheet_records(
         values = {}
         for field_name in CANONICAL_FIELDS:
             index = column_map.get(field_name)
-            values[field_name] = (
-                clean_cell(row[index]) if index is not None and index < len(row) else ""
-            )
+            values[field_name] = clean_cell(row[index]) if index is not None and index < len(row) else ""
 
         if not any(values.values()):
             continue
@@ -210,10 +202,7 @@ def write_output_sheet(
         If the provider did not return exactly one result per input record.
     """
     if len(results) != len(records):
-        raise ValueError(
-            f"provider '{api_name}' returned {len(results)} results "
-            f"for {len(records)} records"
-        )
+        raise ValueError(f"provider '{api_name}' returned {len(results)} results " f"for {len(records)} records")
 
     worksheet = workbook.create_sheet(title=sheet_name)
 
@@ -298,10 +287,7 @@ def process_workbook(
 
             column_map = detect_columns(header)
             if not all(field_name in column_map for field_name in REQUIRED_FIELDS):
-                print(
-                    f"skipping sheet '{name}': missing required columns "
-                    f"(need {', '.join(REQUIRED_FIELDS)})"
-                )
+                print(f"skipping sheet '{name}': missing required columns " f"(need {', '.join(REQUIRED_FIELDS)})")
                 continue
 
             records = read_sheet_records(rows, column_map, name, country_per_sheet)
@@ -312,18 +298,14 @@ def process_workbook(
         source.close()
 
     if processed == 0:
-        raise SystemExit(
-            "error: no worksheets had the required columns; nothing written"
-        )
+        raise SystemExit("error: no worksheets had the required columns; nothing written")
 
     output.save(outfile)
 
 
 def parse_args(argv: Optional[List[str]] = None):
     """Takes and parses the command-line arguments given by the user."""
-    parser = argparse.ArgumentParser(
-        description="Geocode address rows in an Excel workbook."
-    )
+    parser = argparse.ArgumentParser(description="Geocode address rows in an Excel workbook.")
 
     parser.add_argument("infile", help="Excel file to read (must exist)")
     parser.add_argument("outfile", help="Excel file to create (must not exist)")
@@ -391,10 +373,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     if provider_cls.requires_key:
         api_key = resolve_api_key(args.api, args.api_key)
         if not api_key:
-            raise SystemExit(
-                f"error: api '{args.api}' requires an API key "
-                f"(pass --apiKey or set {KEY_ENV_VARS[args.api]})"
-            )
+            raise SystemExit(f"error: api '{args.api}' requires an API key " f"(pass --apiKey or set {KEY_ENV_VARS[args.api]})")
 
     provider = provider_cls(api_key)
     process_workbook(
