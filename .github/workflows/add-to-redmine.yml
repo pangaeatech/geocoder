@@ -1,0 +1,26 @@
+name: Add dependabot/mend PRs to Redmine
+on:
+  pull_request:
+    types: [opened, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  repository-projects: read
+
+jobs:
+  add-to-redmine:
+    if: ${{ github.event.pull_request.user.login == 'dependabot[bot]' || github.event.pull_request.user.login == 'renovate[bot]' || github.event.pull_request.user.login == 'mend-bolt-for-github[bot]' }}
+    uses: pangaeatech/.github/.github/workflows/add-to-redmine.yml@main
+    with:
+      pr_num: ${{github.event.pull_request.number}}
+      pr_url: ${{github.event.pull_request.html_url}}
+      pr_subject: ${{github.event.pull_request.title}}
+      pr_body: ${{github.event.pull_request.body}}
+      rm_url: "https://redmine.pangaeatech.com"
+      rm_project_id: "26cec-01"
+      rm_tracker_id: 29
+      rm_version_id: 1038
+      rm_field_id: 11
+    secrets:
+      rm_key: ${{ secrets.REDMINE_API_KEY }}
