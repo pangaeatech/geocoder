@@ -10,8 +10,8 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 
 import pytest
 
-import api
-from api import Provider, SourceRecord, register, resolve_api_key
+from src import api
+from src.api import Provider, SourceRecord, register, resolve_api_key
 
 
 def test_register_adds_to_registry():
