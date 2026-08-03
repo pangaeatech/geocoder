@@ -302,18 +302,12 @@ def test_main_runs_census_provider(tmp_path, monkeypatch):
     """--api census runs end to end and writes the census result columns."""
     infile = tmp_path / "in.xlsx"
     outfile = tmp_path / "out.xlsx"
-    _make_workbook(
-        infile, {"S": [["Address", "City", "State"], ["1 Main St", "Town", "CA"]]}
-    )
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 Main St", "Town", "CA"]]})
 
     class _Response:
         """Minimal requests.Response stand-in returning a fixed census row."""
 
-        text = (
-            '"0","1 Main St, Town, CA","Match","Exact",'
-            '"1 MAIN ST, TOWN, CA, 90210","-118.0,34.0",'
-            '"1","L","06","037","1","1"\r\n'
-        )
+        text = '"0","1 Main St, Town, CA","Match","Exact",' '"1 MAIN ST, TOWN, CA, 90210","-118.0,34.0",' '"1","L","06","037","1","1"\r\n'
 
         def raise_for_status(self):
             """Mimics a successful response by never raising."""

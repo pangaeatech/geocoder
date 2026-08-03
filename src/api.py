@@ -203,20 +203,11 @@ class CensusProvider(Provider):
         """
         results_by_key: Dict[int, GeocodeResult] = {}
         for start in range(0, len(records), self.BATCH_SIZE):
-            self._geocode_batch(
-                records[start : start + self.BATCH_SIZE], results_by_key
-            )
+            self._geocode_batch(records[start : start + self.BATCH_SIZE], results_by_key)
 
-        return [
-            results_by_key.get(
-                record.internal_key, GeocodeResult(match_notes="No match")
-            )
-            for record in records
-        ]
+        return [results_by_key.get(record.internal_key, GeocodeResult(match_notes="No match")) for record in records]
 
-    def _geocode_batch(
-        self, batch: List[SourceRecord], results_by_key: Dict[int, GeocodeResult]
-    ) -> None:
+    def _geocode_batch(self, batch: List[SourceRecord], results_by_key: Dict[int, GeocodeResult]) -> None:
         """Posts one CSV batch and stores each parsed result by its internal key."""
         response = self._post_batch(batch)
         for row in csv.reader(io.StringIO(response.text)):
@@ -274,9 +265,7 @@ class CensusProvider(Provider):
             )
 
         if status == "Tie":
-            return GeocodeResult(
-                match_type="tie", accuracy=30, match_notes="Tie", raw=raw
-            )
+            return GeocodeResult(match_type="tie", accuracy=30, match_notes="Tie", raw=raw)
 
         return GeocodeResult(match_notes="No match", raw=raw)
 

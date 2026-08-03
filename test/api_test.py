@@ -89,12 +89,8 @@ def test_census_parses_batch(monkeypatch):
             stateprov="DC",
             postalcode="20500",
         ),
-        SourceRecord(
-            internal_key=1, address="Nowhere St", city="Nowhere", stateprov="ZZ"
-        ),
-        SourceRecord(
-            internal_key=2, address="1 Main St", city="Anytown", stateprov="CA"
-        ),
+        SourceRecord(internal_key=1, address="Nowhere St", city="Nowhere", stateprov="ZZ"),
+        SourceRecord(internal_key=2, address="1 Main St", city="Anytown", stateprov="CA"),
     ]
 
     results = api.CensusProvider().geocode(records)
