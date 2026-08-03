@@ -13,18 +13,10 @@ import json
 import openpyxl
 import pytest
 
+import api
 import geocoder
-from geocoder import (
-    GeocodeResult,
-    Provider,
-    SourceRecord,
-    detect_columns,
-    main,
-    process_workbook,
-    register,
-    resolve_api_key,
-    write_output_sheet,
-)
+from api import GeocodeResult, Provider, SourceRecord, register, resolve_api_key
+from geocoder import detect_columns, main, process_workbook, write_output_sheet
 
 
 class MockProvider(Provider):
@@ -118,10 +110,10 @@ def test_register_adds_to_registry():
             return []
 
     try:
-        assert geocoder.PROVIDERS["temp_provider"] is _Temp
+        assert api.PROVIDERS["temp_provider"] is _Temp
         assert _Temp.name == "temp_provider"
     finally:
-        del geocoder.PROVIDERS["temp_provider"]
+        del api.PROVIDERS["temp_provider"]
 
 
 def test_resolve_api_key_cli_wins(monkeypatch):
@@ -329,11 +321,11 @@ def test_main_runs_registered_provider(tmp_path):
         infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]}
     )
 
-    geocoder.PROVIDERS["mock"] = MockProvider
+    api.PROVIDERS["mock"] = MockProvider
     try:
         main([str(infile), str(outfile), "--api", "mock"])
     finally:
-        del geocoder.PROVIDERS["mock"]
+        del api.PROVIDERS["mock"]
 
     assert outfile.exists()
 
@@ -366,7 +358,7 @@ CENSUS_RESPONSE = (
 
 def test_census_registered():
     """@register("census") wires CensusProvider into the registry."""
-    assert geocoder.PROVIDERS["census"] is geocoder.CensusProvider
+    assert api.PROVIDERS["census"] is api.CensusProvider
 
 
 def test_census_parses_batch(monkeypatch):
@@ -377,7 +369,7 @@ def test_census_parses_batch(monkeypatch):
         captured.update(url=url, data=data, files=files, timeout=timeout)
         return _FakeResponse(CENSUS_RESPONSE)
 
-    monkeypatch.setattr(geocoder.requests, "post", fake_post)
+    monkeypatch.setattr(api.requests, "post", fake_post)
 
     records = [
         SourceRecord(
@@ -395,9 +387,9 @@ def test_census_parses_batch(monkeypatch):
         ),
     ]
 
-    results = geocoder.CensusProvider().geocode(records)
+    results = api.CensusProvider().geocode(records)
 
-    assert captured["url"] == geocoder.CensusProvider.ENDPOINT
+    assert captured["url"] == api.CensusProvider.ENDPOINT
     assert captured["data"]["benchmark"] == "Public_AR_Current"
     assert captured["data"]["vintage"] == "Current_Current"
 
@@ -430,7 +422,7 @@ def test_census_builds_csv_input(monkeypatch):
         captured["csv"] = files["addressFile"][1]
         return _FakeResponse('"0","1 Main St, Town, CA","No_Match"\r\n')
 
-    monkeypatch.setattr(geocoder.requests, "post", fake_post)
+    monkeypatch.setattr(api.requests, "post", fake_post)
 
     records = [
         SourceRecord(
@@ -441,7 +433,7 @@ def test_census_builds_csv_input(monkeypatch):
             postalcode="90210",
         )
     ]
-    geocoder.CensusProvider().geocode(records)
+    api.CensusProvider().geocode(records)
 
     assert captured["csv"].startswith("0,")
     assert "1 Main St" in captured["csv"]
@@ -463,7 +455,7 @@ def test_main_runs_census_provider(tmp_path, monkeypatch):
             '"1","L","06","037","1","1"\r\n'
         )
 
-    monkeypatch.setattr(geocoder.requests, "post", fake_post)
+    monkeypatch.setattr(api.requests, "post", fake_post)
 
     main([str(infile), str(outfile), "--api", "census"])
 
