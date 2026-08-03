@@ -13,18 +13,10 @@ import json
 import openpyxl
 import pytest
 
+import api
 import geocoder
-from geocoder import (
-    GeocodeResult,
-    Provider,
-    SourceRecord,
-    detect_columns,
-    main,
-    process_workbook,
-    register,
-    resolve_api_key,
-    write_output_sheet,
-)
+from api import GeocodeResult, Provider, SourceRecord, register, resolve_api_key
+from geocoder import detect_columns, main, process_workbook, write_output_sheet
 
 
 class MockProvider(Provider):
@@ -118,10 +110,10 @@ def test_register_adds_to_registry():
             return []
 
     try:
-        assert geocoder.PROVIDERS["temp_provider"] is _Temp
+        assert api.PROVIDERS["temp_provider"] is _Temp
         assert _Temp.name == "temp_provider"
     finally:
-        del geocoder.PROVIDERS["temp_provider"]
+        del api.PROVIDERS["temp_provider"]
 
 
 def test_resolve_api_key_cli_wins(monkeypatch):
@@ -329,11 +321,11 @@ def test_main_runs_registered_provider(tmp_path):
         infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]}
     )
 
-    geocoder.PROVIDERS["mock"] = MockProvider
+    api.PROVIDERS["mock"] = MockProvider
     try:
         main([str(infile), str(outfile), "--api", "mock"])
     finally:
-        del geocoder.PROVIDERS["mock"]
+        del api.PROVIDERS["mock"]
 
     assert outfile.exists()
 
