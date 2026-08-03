@@ -1,0 +1,8 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>pangaeatech/.github", "customManagers:githubActionsVersions"],
+  "baseBranchPatterns": ["main"],
+  "branchPrefix": "renovate/",
+  "enabledManagers": ["poetry", "custom.regex"],
+  "lockFileMaintenance": { "enabled": true }
+}

@@ -1,0 +1,65 @@
+name: Test
+concurrency: test-${{ github.head_ref || github.ref }}
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    if: ${{ github.event_name == 'push' || (!github.event.pull_request.draft && !startsWith(github.event.pull_request.title, 'WIP ')) }}
+    runs-on: ubuntu-latest
+
+    name: Build and Test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: true
+          lfs: true
+          submodules: true
+          ref: ${{ github.head_ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install poetry
+        uses: abatilo/actions-poetry@v4
+
+      - name: Set up local venv
+        run: |
+          poetry config virtualenvs.create true --local
+          poetry config virtualenvs.in-project true --local
+
+      - run: poetry install
+
+      - run: poetry run black --check .
+
+      - run: poetry run pylint *.py */*.py
+
+      - name: Run Coverage
+        run: |
+          poetry run coverage run --branch -m pytest test
+          poetry run coverage report --fail-under=85 ./*.py src/*.py
+          poetry run coverage html ./*.py src/*.py
+
+      - name: Upload coverage artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: htmlcov/
+
+      - run: poetry run pdoc -o ./docs *.py
+
+      - name: Upload documentation
+        uses: actions/upload-artifact@v7
+        with:
+          name: documentation
+          path: docs/
