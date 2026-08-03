@@ -8,6 +8,8 @@ Geocoder API Tests
 Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
+import pytest
+
 import api
 from api import Provider, register, resolve_api_key
 
@@ -43,3 +45,56 @@ def test_resolve_api_key_env_fallback(monkeypatch):
 def test_resolve_api_key_none_for_keyless_provider():
     """A provider without a configured env var resolves to no key."""
     assert resolve_api_key("census", None) is None
+
+
+class _FakeResponse:
+    """Stands in for a requests.Response so retry tests avoid the network."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        """Mimics a successful response by never raising."""
+
+
+class _RetryProvider(Provider):
+    """Routes a single retried request through geocode for the retry tests."""
+
+    def __init__(self, send):
+        super().__init__()
+        self.send = send
+
+    def geocode(self, records):
+        """Returns the response from one retried request, ignoring records."""
+        return self._request_with_retry(self.send)
+
+
+def test_request_with_retry_succeeds_after_transient_error(monkeypatch):
+    """A transient connection error is retried until the request succeeds."""
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+    attempts = {"count": 0}
+
+    def send():
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise api.requests.ConnectionError("connection reset")
+        return _FakeResponse("ok")
+
+    response = _RetryProvider(send).geocode([])
+
+    assert attempts["count"] == 3
+    assert response.text == "ok"
+
+
+def test_request_with_retry_reraises_after_exhausting_attempts(monkeypatch):
+    """Retries stop at MAX_ATTEMPTS and the final failure propagates."""
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+    attempts = {"count": 0}
+
+    def send():
+        attempts["count"] += 1
+        raise api.requests.ConnectionError("connection reset")
+
+    with pytest.raises(api.requests.ConnectionError):
+        _RetryProvider(send).geocode([])
+    assert attempts["count"] == Provider.MAX_ATTEMPTS
