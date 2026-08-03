@@ -14,7 +14,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type
 
 import requests
 
@@ -85,6 +85,8 @@ class Provider(ABC):
 
     name: str = ""
     requires_key: bool = False
+    MAX_ATTEMPTS = 3
+    RETRY_BACKOFF = 5
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
@@ -92,6 +94,44 @@ class Provider(ABC):
     @abstractmethod
     def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
         """Returns one GeocodeResult per input record, in the same order."""
+
+    def _request_with_retry(
+        self, send: Callable[[], requests.Response]
+    ) -> requests.Response:
+        """
+        Calls send(), retrying transient failures with a linear backoff.
+
+        Each attempt runs send() and raises for an HTTP error status; any
+        requests error is retried until MAX_ATTEMPTS is reached, sleeping
+        RETRY_BACKOFF seconds times the attempt number between tries. The final
+        failure is re-raised.
+
+        Parameters
+        ----------
+        send : Callable[[], requests.Response]
+            A zero-argument callable that performs one HTTP request.
+
+        Return
+        ----------
+        requests.Response
+            The first successful response.
+
+        Raises
+        ----------
+        requests.RequestException
+            If every attempt fails.
+        """
+        last_error = None
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            try:
+                response = send()
+                response.raise_for_status()
+                return response
+            except requests.RequestException as error:
+                last_error = error
+                if attempt < self.MAX_ATTEMPTS:
+                    time.sleep(self.RETRY_BACKOFF * attempt)
+        raise last_error
 
 
 def resolve_api_key(api: str, cli_key: Optional[str]) -> Optional[str]:
@@ -133,8 +173,6 @@ class CensusProvider(Provider):
     VINTAGE = "Current_Current"
     BATCH_SIZE = 10000
     TIMEOUT = 300
-    MAX_ATTEMPTS = 3
-    RETRY_BACKOFF = 5
 
     RESPONSE_FIELDS = [
         "id",
@@ -188,43 +226,16 @@ class CensusProvider(Provider):
                 results_by_key[int(row[0])] = self._parse_row(row)
 
     def _post_batch(self, batch: List[SourceRecord]) -> requests.Response:
-        """
-        Posts one CSV batch, retrying transient failures with a linear backoff.
-
-        Each attempt is retried on any requests error until MAX_ATTEMPTS is
-        reached, sleeping RETRY_BACKOFF seconds times the attempt number between
-        tries. The final failure is re-raised.
-
-        Parameters
-        ----------
-        batch : List[SourceRecord]
-            The records to submit in this request.
-
-        Return
-        ----------
-        requests.Response
-            The successful response.
-
-        Raises
-        ----------
-        requests.RequestException
-            If every attempt fails.
-        """
+        """Posts one CSV batch through the retrying request helper."""
         csv_input = self._build_csv(batch)
-        for attempt in range(1, self.MAX_ATTEMPTS + 1):
-            try:
-                response = requests.post(
-                    self.ENDPOINT,
-                    data={"benchmark": self.BENCHMARK, "vintage": self.VINTAGE},
-                    files={"addressFile": ("addresses.csv", csv_input)},
-                    timeout=self.TIMEOUT,
-                )
-                response.raise_for_status()
-                return response
-            except requests.RequestException:
-                if attempt == self.MAX_ATTEMPTS:
-                    raise
-                time.sleep(self.RETRY_BACKOFF * attempt)
+        return self._request_with_retry(
+            lambda: requests.post(
+                self.ENDPOINT,
+                data={"benchmark": self.BENCHMARK, "vintage": self.VINTAGE},
+                files={"addressFile": ("addresses.csv", csv_input)},
+                timeout=self.TIMEOUT,
+            )
+        )
 
     @staticmethod
     def _build_csv(batch: List[SourceRecord]) -> str:

@@ -150,38 +150,44 @@ def test_census_builds_csv_input(monkeypatch):
     assert "90210" in captured["csv"]
 
 
-def test_census_retries_transient_failure(monkeypatch):
+class _RetryProvider(Provider):
+    """Routes a single retried request through geocode for the retry tests."""
+
+    def __init__(self, send):
+        super().__init__()
+        self.send = send
+
+    def geocode(self, records):
+        """Returns the response from one retried request, ignoring records."""
+        return self._request_with_retry(self.send)
+
+
+def test_request_with_retry_succeeds_after_transient_error(monkeypatch):
     """A transient connection error is retried until the request succeeds."""
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
     attempts = {"count": 0}
 
-    def fake_post(url, data=None, files=None, timeout=None):
+    def send():
         attempts["count"] += 1
         if attempts["count"] < 3:
             raise api.requests.ConnectionError("connection reset")
-        return _FakeResponse('"0","1 Main St, Town, CA","No_Match"\r\n')
+        return _FakeResponse("ok")
 
-    monkeypatch.setattr(api.requests, "post", fake_post)
-    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
-
-    records = [SourceRecord(internal_key=0, address="1 Main St", stateprov="CA")]
-    results = api.CensusProvider().geocode(records)
+    response = _RetryProvider(send).geocode([])
 
     assert attempts["count"] == 3
-    assert results[0].match_type == "no_match"
+    assert response.text == "ok"
 
 
-def test_census_reraises_after_exhausting_retries(monkeypatch):
+def test_request_with_retry_reraises_after_exhausting_attempts(monkeypatch):
     """Retries stop at MAX_ATTEMPTS and the final failure propagates."""
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
     attempts = {"count": 0}
 
-    def fake_post(url, data=None, files=None, timeout=None):
+    def send():
         attempts["count"] += 1
         raise api.requests.ConnectionError("connection reset")
 
-    monkeypatch.setattr(api.requests, "post", fake_post)
-    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
-
-    records = [SourceRecord(internal_key=0, address="1 Main St", stateprov="CA")]
     with pytest.raises(api.requests.ConnectionError):
-        api.CensusProvider().geocode(records)
-    assert attempts["count"] == api.CensusProvider.MAX_ATTEMPTS
+        _RetryProvider(send).geocode([])
+    assert attempts["count"] == Provider.MAX_ATTEMPTS
