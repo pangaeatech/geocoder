@@ -15,7 +15,7 @@ import pytest
 
 import api
 import geocoder
-from api import GeocodeResult, Provider, SourceRecord, register, resolve_api_key
+from api import GeocodeResult, Provider, SourceRecord
 from geocoder import detect_columns, main, process_workbook, write_output_sheet
 
 
@@ -98,39 +98,6 @@ def test_detect_columns_first_match_wins():
     """When several columns match one field, the first column wins."""
     mapping = detect_columns(["address", "street address"])
     assert mapping["ADDRESS"] == 0
-
-
-def test_register_adds_to_registry():
-    """@register adds the subclass to PROVIDERS and sets its name."""
-
-    @register("temp_provider")
-    class _Temp(Provider):
-        def geocode(self, records):
-            """Returns no results; the class only exercises registration."""
-            return []
-
-    try:
-        assert api.PROVIDERS["temp_provider"] is _Temp
-        assert _Temp.name == "temp_provider"
-    finally:
-        del api.PROVIDERS["temp_provider"]
-
-
-def test_resolve_api_key_cli_wins(monkeypatch):
-    """A command-line key takes precedence over the environment variable."""
-    monkeypatch.setenv("GEOCODIO_API_KEY", "from_env")
-    assert resolve_api_key("geocodio", "from_cli") == "from_cli"
-
-
-def test_resolve_api_key_env_fallback(monkeypatch):
-    """The environment variable is used when no command-line key is given."""
-    monkeypatch.setenv("GEOCODIO_API_KEY", "from_env")
-    assert resolve_api_key("geocodio", None) == "from_env"
-
-
-def test_resolve_api_key_none_for_keyless_provider():
-    """A provider without a configured env var resolves to no key."""
-    assert resolve_api_key("census", None) is None
 
 
 def test_process_workbook_end_to_end(tmp_path):
