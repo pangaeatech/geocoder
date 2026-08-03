@@ -11,6 +11,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 import csv
 import io
 import os
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Type
@@ -132,6 +133,8 @@ class CensusProvider(Provider):
     VINTAGE = "Current_Current"
     BATCH_SIZE = 10000
     TIMEOUT = 300
+    MAX_ATTEMPTS = 3
+    RETRY_BACKOFF = 5
 
     RESPONSE_FIELDS = [
         "id",
@@ -179,17 +182,49 @@ class CensusProvider(Provider):
         self, batch: List[SourceRecord], results_by_key: Dict[int, GeocodeResult]
     ) -> None:
         """Posts one CSV batch and stores each parsed result by its internal key."""
-        response = requests.post(
-            self.ENDPOINT,
-            data={"benchmark": self.BENCHMARK, "vintage": self.VINTAGE},
-            files={"addressFile": ("addresses.csv", self._build_csv(batch))},
-            timeout=self.TIMEOUT,
-        )
-        response.raise_for_status()
-
+        response = self._post_batch(batch)
         for row in csv.reader(io.StringIO(response.text)):
             if row:
                 results_by_key[int(row[0])] = self._parse_row(row)
+
+    def _post_batch(self, batch: List[SourceRecord]) -> requests.Response:
+        """
+        Posts one CSV batch, retrying transient failures with a linear backoff.
+
+        Each attempt is retried on any requests error until MAX_ATTEMPTS is
+        reached, sleeping RETRY_BACKOFF seconds times the attempt number between
+        tries. The final failure is re-raised.
+
+        Parameters
+        ----------
+        batch : List[SourceRecord]
+            The records to submit in this request.
+
+        Return
+        ----------
+        requests.Response
+            The successful response.
+
+        Raises
+        ----------
+        requests.RequestException
+            If every attempt fails.
+        """
+        csv_input = self._build_csv(batch)
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            try:
+                response = requests.post(
+                    self.ENDPOINT,
+                    data={"benchmark": self.BENCHMARK, "vintage": self.VINTAGE},
+                    files={"addressFile": ("addresses.csv", csv_input)},
+                    timeout=self.TIMEOUT,
+                )
+                response.raise_for_status()
+                return response
+            except requests.RequestException:
+                if attempt == self.MAX_ATTEMPTS:
+                    raise
+                time.sleep(self.RETRY_BACKOFF * attempt)
 
     @staticmethod
     def _build_csv(batch: List[SourceRecord]) -> str:

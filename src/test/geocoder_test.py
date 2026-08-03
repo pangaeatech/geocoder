@@ -407,6 +407,43 @@ def test_census_builds_csv_input(monkeypatch):
     assert "90210" in captured["csv"]
 
 
+def test_census_retries_transient_failure(monkeypatch):
+    """A transient connection error is retried until the request succeeds."""
+    attempts = {"count": 0}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise api.requests.ConnectionError("connection reset")
+        return _FakeResponse('"0","1 Main St, Town, CA","No_Match"\r\n')
+
+    monkeypatch.setattr(api.requests, "post", fake_post)
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+
+    records = [SourceRecord(internal_key=0, address="1 Main St", stateprov="CA")]
+    results = api.CensusProvider().geocode(records)
+
+    assert attempts["count"] == 3
+    assert results[0].match_type == "no_match"
+
+
+def test_census_reraises_after_exhausting_retries(monkeypatch):
+    """Retries stop at MAX_ATTEMPTS and the final failure propagates."""
+    attempts = {"count": 0}
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        attempts["count"] += 1
+        raise api.requests.ConnectionError("connection reset")
+
+    monkeypatch.setattr(api.requests, "post", fake_post)
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+
+    records = [SourceRecord(internal_key=0, address="1 Main St", stateprov="CA")]
+    with pytest.raises(api.requests.ConnectionError):
+        api.CensusProvider().geocode(records)
+    assert attempts["count"] == api.CensusProvider.MAX_ATTEMPTS
+
+
 def test_main_runs_census_provider(tmp_path, monkeypatch):
     """--api census runs end to end and writes the census result columns."""
     infile = tmp_path / "in.xlsx"
