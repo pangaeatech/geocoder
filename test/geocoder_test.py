@@ -14,6 +14,7 @@ import openpyxl
 import pytest
 
 from src import api
+from src import census
 from src import geocoder
 from src.api import GeocodeResult, Provider, SourceRecord
 from src.geocoder import detect_columns, main, process_workbook, write_output_sheet
@@ -315,7 +316,7 @@ def test_main_runs_census_provider(tmp_path, monkeypatch):
     def fake_post(url, data=None, files=None, timeout=None):
         return _Response()
 
-    monkeypatch.setattr(api.requests, "post", fake_post)
+    monkeypatch.setattr(census.requests, "post", fake_post)
 
     main([str(infile), str(outfile), "--api", "census"])
 

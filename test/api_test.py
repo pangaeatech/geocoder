@@ -11,7 +11,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 import pytest
 
 from src import api
-from src.api import Provider, SourceRecord, register, resolve_api_key
+from src.api import Provider, register, resolve_api_key
 
 
 def test_register_adds_to_registry():
@@ -55,95 +55,6 @@ class _FakeResponse:
 
     def raise_for_status(self):
         """Mimics a successful response by never raising."""
-
-
-CENSUS_RESPONSE = (
-    '"2","1 Main St, Anytown, CA","Tie"\r\n'
-    '"0","1600 Pennsylvania Ave NW, Washington, DC, 20500","Match","Exact",'
-    '"1600 PENNSYLVANIA AVE NW, WASHINGTON, DC, 20500","-77.03535,38.898754",'
-    '"76225813","L","11","001","980000","1034"\r\n'
-    '"1","Nowhere St, Nowhere, ZZ","No_Match"\r\n'
-)
-
-
-def test_census_registered():
-    """@register("census") wires CensusProvider into the registry."""
-    assert api.PROVIDERS["census"] is api.CensusProvider
-
-
-def test_census_parses_batch(monkeypatch):
-    """A batch response is parsed and aligned to records by internal key."""
-    captured = {}
-
-    def fake_post(url, data=None, files=None, timeout=None):
-        captured.update(url=url, data=data, files=files, timeout=timeout)
-        return _FakeResponse(CENSUS_RESPONSE)
-
-    monkeypatch.setattr(api.requests, "post", fake_post)
-
-    records = [
-        SourceRecord(
-            internal_key=0,
-            address="1600 Pennsylvania Ave NW",
-            city="Washington",
-            stateprov="DC",
-            postalcode="20500",
-        ),
-        SourceRecord(internal_key=1, address="Nowhere St", city="Nowhere", stateprov="ZZ"),
-        SourceRecord(internal_key=2, address="1 Main St", city="Anytown", stateprov="CA"),
-    ]
-
-    results = api.CensusProvider().geocode(records)
-
-    assert captured["url"] == api.CensusProvider.ENDPOINT
-    assert captured["data"]["benchmark"] == "Public_AR_Current"
-    assert captured["data"]["vintage"] == "Current_Current"
-
-    exact = results[0]
-    assert exact.match_type == "exact"
-    assert exact.accuracy == 100
-    assert exact.result_address == "1600 PENNSYLVANIA AVE NW"
-    assert exact.result_city == "WASHINGTON"
-    assert exact.result_stateprov == "DC"
-    assert exact.result_postalcode == "20500"
-    assert exact.longitude == "-77.03535"
-    assert exact.latitude == "38.898754"
-    assert exact.location_type == ""
-    assert exact.result_id == ""
-
-    assert results[1].match_type == "no_match"
-    assert results[1].accuracy == 0
-    assert results[1].match_notes == "No match"
-
-    assert results[2].match_type == "tie"
-    assert results[2].accuracy == 30
-    assert results[2].match_notes == "Tie"
-
-
-def test_census_builds_csv_input(monkeypatch):
-    """The posted CSV carries the internal key and address components."""
-    captured = {}
-
-    def fake_post(url, data=None, files=None, timeout=None):
-        captured["csv"] = files["addressFile"][1]
-        return _FakeResponse('"0","1 Main St, Town, CA","No_Match"\r\n')
-
-    monkeypatch.setattr(api.requests, "post", fake_post)
-
-    records = [
-        SourceRecord(
-            internal_key=0,
-            address="1 Main St",
-            city="Town",
-            stateprov="CA",
-            postalcode="90210",
-        )
-    ]
-    api.CensusProvider().geocode(records)
-
-    assert captured["csv"].startswith("0,")
-    assert "1 Main St" in captured["csv"]
-    assert "90210" in captured["csv"]
 
 
 class _RetryProvider(Provider):
