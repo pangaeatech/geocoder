@@ -75,11 +75,13 @@ class CensusProvider(Provider):
         return [results_by_key.get(record.internal_key, GeocodeResult(match_notes="No match")) for record in records]
 
     def _geocode_batch(self, batch: List[SourceRecord], results_by_key: Dict[int, GeocodeResult]) -> None:
-        """Posts one CSV batch and stores each parsed result by its internal key."""
+        """Posts one CSV batch, verifies its row count, and stores each result by internal key."""
         response = self._post_batch(batch)
-        for row in csv.reader(io.StringIO(response.text)):
-            if row:
-                results_by_key[int(row[0])] = self._parse_row(row)
+        rows = [row for row in csv.reader(io.StringIO(response.text)) if row]
+        if len(rows) != len(batch):
+            raise ValueError(f"Census returned {len(rows)} rows for {len(batch)} submitted records; the service or benchmark may have changed")
+        for row in rows:
+            results_by_key[int(row[0])] = self._parse_row(row)
 
     def _post_batch(self, batch: List[SourceRecord]) -> requests.Response:
         """Posts one CSV batch through the retrying request helper."""
@@ -126,7 +128,8 @@ class CensusProvider(Provider):
         raw = dict(zip(self.RESPONSE_FIELDS, row))
         status = row[2] if len(row) > 2 else "No_Match"
 
-        if status == "Match" and len(row) > 5:
+        if status == "Match":
+            self._check_layout(row)
             exact = row[3].strip().lower() == "exact"
             address, city, stateprov, postalcode = self._split_address(row[4])
             longitude, latitude = self._split_coordinates(row[5])
@@ -147,6 +150,27 @@ class CensusProvider(Provider):
             return GeocodeResult(match_type="tie", match_notes="Tie", raw=raw)
 
         return GeocodeResult(match_notes="No match", raw=raw)
+
+    def _check_layout(self, row: List[str]) -> None:
+        """
+        Fails loudly when a match row departs from the pinned Census2020 layout.
+
+        The addressbatch response is headerless and read by fixed position, so a
+        match must carry the full column set and a numeric ``lon,lat`` pair; a
+        mismatch means the pinned layout shifted and positional reads can no
+        longer be trusted.
+        """
+        if len(row) != len(self.RESPONSE_FIELDS):
+            raise ValueError(
+                f"Census match row has {len(row)} of {len(self.RESPONSE_FIELDS)} expected fields; pinned layout may have changed: {row!r}"
+            )
+
+        longitude, latitude = self._split_coordinates(row[5])
+        try:
+            float(longitude)
+            float(latitude)
+        except ValueError:
+            raise ValueError(f"Census match coordinates {row[5]!r} are not a numeric lon,lat pair; pinned layout may have changed: {row!r}") from None
 
     @staticmethod
     def _split_address(matched_address: str) -> List[str]:

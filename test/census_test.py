@@ -8,6 +8,8 @@ Geocoder Census Provider Tests
 Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
+import pytest
+
 from src import census
 from src.api import PROVIDERS, SourceRecord
 
@@ -120,3 +122,43 @@ def test_census_builds_csv_input(monkeypatch):
     assert captured["csv"].startswith("0,")
     assert "1 Main St" in captured["csv"]
     assert "90210" in captured["csv"]
+
+
+def test_census_raises_on_truncated_match_row(monkeypatch):
+    """A match row missing pinned columns fails loudly instead of misparsing."""
+
+    def fake_post(*_args, **_kwargs):
+        return _FakeResponse('"0","1 Main St, Town, CA","Match","Exact","1 MAIN ST, TOWN, CA, 90210","-118.0,34.0"\r\n')
+
+    monkeypatch.setattr(census.requests, "post", fake_post)
+
+    with pytest.raises(ValueError):
+        census.CensusProvider().geocode([SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA")])
+
+
+def test_census_raises_on_shifted_coordinates(monkeypatch):
+    """A match whose coordinate slot is not a lon,lat pair signals layout drift and fails."""
+
+    def fake_post(*_args, **_kwargs):
+        return _FakeResponse('"0","1 Main St","Match","Exact","1 MAIN ST, TOWN, CA, 90210","L","76225813","11","001","980000","1034","EXTRA"\r\n')
+
+    monkeypatch.setattr(census.requests, "post", fake_post)
+
+    with pytest.raises(ValueError):
+        census.CensusProvider().geocode([SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA")])
+
+
+def test_census_raises_on_row_count_mismatch(monkeypatch):
+    """A response short of one row per record (retired benchmark, error body) fails loudly."""
+
+    def fake_post(*_args, **_kwargs):
+        return _FakeResponse('"0","1 Main St, Town, CA","No_Match"\r\n')
+
+    monkeypatch.setattr(census.requests, "post", fake_post)
+
+    records = [
+        SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA"),
+        SourceRecord(internal_key=1, address="2 Oak St", city="Town", stateprov="CA"),
+    ]
+    with pytest.raises(ValueError):
+        census.CensusProvider().geocode(records)
