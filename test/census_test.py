@@ -28,6 +28,9 @@ CENSUS_RESPONSE = (
     '"1600 PENNSYLVANIA AVE NW, WASHINGTON, DC, 20500","-77.03535,38.898754",'
     '"76225813","L","11","001","980000","1034"\r\n'
     '"1","Nowhere St, Nowhere, ZZ","No_Match"\r\n'
+    '"3","500 W Madison St, Chicago, IL","Match","Non_Exact",'
+    '"500 W MADISON ST, CHICAGO, IL, 60661","-87.63960,41.88187",'
+    '"112042099","L","17","031","839100","1000"\r\n'
 )
 
 
@@ -56,6 +59,7 @@ def test_census_parses_batch(monkeypatch):
         ),
         SourceRecord(internal_key=1, address="Nowhere St", city="Nowhere", stateprov="ZZ"),
         SourceRecord(internal_key=2, address="1 Main St", city="Anytown", stateprov="CA"),
+        SourceRecord(internal_key=3, address="500 W Madison St", city="Chicago", stateprov="IL"),
     ]
 
     results = census.CensusProvider().geocode(records)
@@ -66,7 +70,7 @@ def test_census_parses_batch(monkeypatch):
 
     exact = results[0]
     assert exact.match_type == "exact"
-    assert exact.accuracy == 100
+    assert exact.accuracy == 90
     assert exact.result_address == "1600 PENNSYLVANIA AVE NW"
     assert exact.result_city == "WASHINGTON"
     assert exact.result_stateprov == "DC"
@@ -82,8 +86,14 @@ def test_census_parses_batch(monkeypatch):
     assert results[1].match_notes == "No match"
 
     assert results[2].match_type == "tie"
-    assert results[2].accuracy == 30
+    assert results[2].accuracy == 0
     assert results[2].match_notes == "Tie"
+
+    non_exact = results[3]
+    assert non_exact.match_type == "non-exact"
+    assert non_exact.accuracy == 90
+    assert non_exact.result_id == "112042099"
+    assert non_exact.result_country == "US"
 
 
 def test_census_builds_csv_input(monkeypatch):

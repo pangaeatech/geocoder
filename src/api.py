@@ -64,6 +64,63 @@ class GeocodeResult:
     raw: Dict[str, Any] = field(default_factory=dict)
 
 
+ACCURACY_LEVELS = {
+    "rooftop": 100,
+    "parcel": 90,
+    "block": 80,
+    "street": 70,
+    "neighborhood": 60,
+    "postalcode": 50,
+    "city": 40,
+    "county": 30,
+    "state": 20,
+    "country": 10,
+    "none": 0,
+}
+
+ACCURACY_BY_GRANULARITY = (
+    ("result_address", ACCURACY_LEVELS["rooftop"]),
+    ("result_postalcode", ACCURACY_LEVELS["postalcode"]),
+    ("result_city", ACCURACY_LEVELS["city"]),
+    ("result_stateprov", ACCURACY_LEVELS["state"]),
+    ("result_country", ACCURACY_LEVELS["country"]),
+)
+
+
+def grade_accuracy(result: GeocodeResult, cap: Optional[int] = None) -> int:
+    """
+    Scores a result by how specific its populated location fields are.
+
+    The score reflects the most specific field the provider returned, not how
+    well the source matched, so a street-level result always outranks one that
+    resolved only to a city or state. Fields are checked from most to least
+    specific and the first populated one wins; a result with no location fields
+    scores zero. Scores follow ACCURACY_LEVELS, mapped onto the location fields a
+    result actually carries.
+
+    The cap bounds the score to a provider's best achievable precision: a
+    provider that never resolves finer than a street (e.g. Census, which
+    interpolates a parcel rather than pinpointing a rooftop) passes the parcel
+    level, while one that can pinpoint a rooftop leaves it unset.
+
+    Parameters
+    ----------
+    result : GeocodeResult
+        The result whose location fields are inspected.
+    cap : Optional[int]
+        The highest score the provider can achieve, or None for no limit.
+
+    Return
+    ----------
+    int
+        The accuracy score for the most specific populated field, bounded by cap.
+    """
+    for field_name, score in ACCURACY_BY_GRANULARITY:
+        if getattr(result, field_name):
+            return score if cap is None else min(score, cap)
+    return ACCURACY_LEVELS["none"]
+
+
 PROVIDERS: Dict[str, Type["Provider"]] = {}
 
 
@@ -85,6 +142,7 @@ class Provider(ABC):
     requires_key: bool = False
     MAX_ATTEMPTS = 3
     RETRY_BACKOFF = 5
+    MAX_ACCURACY = ACCURACY_LEVELS["rooftop"]
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key

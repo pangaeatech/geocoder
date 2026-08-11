@@ -14,7 +14,7 @@ from typing import Dict, List
 
 import requests
 
-from .api import GeocodeResult, Provider, SourceRecord, register
+from .api import ACCURACY_LEVELS, GeocodeResult, Provider, SourceRecord, grade_accuracy, register
 
 
 @register("census")
@@ -31,6 +31,7 @@ class CensusProvider(Provider):
     """
 
     requires_key = False
+    MAX_ACCURACY = ACCURACY_LEVELS["parcel"]
 
     ENDPOINT = "https://geocoding.geo.census.gov/geocoder/geographies/addressbatch"
     BENCHMARK = "Public_AR_Census2020"
@@ -110,7 +111,18 @@ class CensusProvider(Provider):
         return buffer.getvalue()
 
     def _parse_row(self, row: List[str]) -> GeocodeResult:
-        """Converts one Census response row into a normalized GeocodeResult."""
+        """
+        Converts one Census response row into a normalized GeocodeResult.
+
+        Accuracy is graded from the populated result fields rather than the
+        Census match type, so it reflects how specific the returned location is.
+        """
+        result = self._build_result(row)
+        result.accuracy = grade_accuracy(result, self.MAX_ACCURACY)
+        return result
+
+    def _build_result(self, row: List[str]) -> GeocodeResult:
+        """Maps a Census response row to a result without scoring its accuracy."""
         raw = dict(zip(self.RESPONSE_FIELDS, row))
         status = row[2] if len(row) > 2 else "No_Match"
 
@@ -128,12 +140,11 @@ class CensusProvider(Provider):
                 latitude=latitude,
                 longitude=longitude,
                 match_type="exact" if exact else "non-exact",
-                accuracy=100 if exact else 70,
                 raw=raw,
             )
 
         if status == "Tie":
-            return GeocodeResult(match_type="tie", accuracy=30, match_notes="Tie", raw=raw)
+            return GeocodeResult(match_type="tie", match_notes="Tie", raw=raw)
 
         return GeocodeResult(match_notes="No match", raw=raw)
 
