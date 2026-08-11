@@ -14,7 +14,7 @@ from typing import Dict, List
 
 import requests
 
-from .api import ACCURACY_LEVELS, GeocodeResult, Provider, SourceRecord, grade_accuracy, register
+from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, grade_accuracy, register
 
 
 @register("census")
@@ -31,7 +31,7 @@ class CensusProvider(Provider):
     """
 
     requires_key = False
-    MAX_ACCURACY = ACCURACY_LEVELS["parcel"]
+    MAX_ACCURACY = AccuracyLevel.PARCEL
 
     ENDPOINT = "https://geocoding.geo.census.gov/geocoder/geographies/addressbatch"
     BENCHMARK = "Public_AR_Census2020"

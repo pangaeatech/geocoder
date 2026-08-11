@@ -100,7 +100,7 @@ def test_census_builds_csv_input(monkeypatch):
     """The posted CSV carries the internal key and address components."""
     captured = {}
 
-    def fake_post(url, data=None, files=None, timeout=None):
+    def fake_post(_url, files=None, **_kwargs):
         captured["csv"] = files["addressFile"][1]
         return _FakeResponse('"0","1 Main St, Town, CA","No_Match"\r\n')
 
