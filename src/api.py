@@ -17,7 +17,6 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 import requests
 
-
 KEY_ENV_VARS = {
     "geocodio": "GEOCODIO_API_KEY",
     "google": "GOOGLE_GEOCODING_API_KEY",
