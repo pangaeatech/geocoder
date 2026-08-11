@@ -14,6 +14,7 @@ import openpyxl
 import pytest
 
 from src import api
+from src import census
 from src import geocoder
 from src.api import GeocodeResult, Provider, SourceRecord
 from src.geocoder import detect_columns, main, process_workbook, write_output_sheet
@@ -296,3 +297,33 @@ def test_write_output_sheet_length_mismatch_raises():
     records = [SourceRecord(internal_key=0, address="1 A St")]
     with pytest.raises(ValueError):
         write_output_sheet(openpyxl.Workbook(), "S", records, [], "mock", False)
+
+
+def test_main_runs_census_provider(tmp_path, monkeypatch):
+    """--api census runs end to end and writes the census result columns."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 Main St", "Town", "CA"]]})
+
+    class _Response:
+        """Minimal requests.Response stand-in returning a fixed census row."""
+
+        text = '"0","1 Main St, Town, CA","Match","Exact","1 MAIN ST, TOWN, CA, 90210","-118.0,34.0","1","L","06","037","1","1"\r\n'
+
+        def raise_for_status(self):
+            """Mimics a successful response by never raising."""
+
+    def fake_post(*_args, **_kwargs):
+        return _Response()
+
+    monkeypatch.setattr(census.requests, "post", fake_post)
+
+    main([str(infile), str(outfile), "--api", "census"])
+
+    sheet = openpyxl.load_workbook(outfile)["S"]
+    header = [cell.value for cell in sheet[1]]
+    values = dict(zip(header, [cell.value for cell in sheet[2]]))
+    assert values["GEOCODER_API"] == "census"
+    assert values["RESULT_LATITUDE"] == "34.0"
+    assert values["RESULT_LONGITUDE"] == "-118.0"
+    assert values["MATCH_TYPE"] == "exact"

@@ -11,7 +11,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 import pytest
 
 from src import api
-from src.api import Provider, register, resolve_api_key
+from src.api import GeocodeResult, Provider, grade_accuracy, register, resolve_api_key
 
 
 def test_register_adds_to_registry():
@@ -47,8 +47,28 @@ def test_resolve_api_key_none_for_keyless_provider():
     assert resolve_api_key("census", None) is None
 
 
+def test_grade_accuracy_uses_most_specific_field():
+    """Each populated field grades to its tier, most specific field winning."""
+    assert grade_accuracy(GeocodeResult(result_address="1 Main St", result_city="Town")) == 100
+    assert grade_accuracy(GeocodeResult(result_postalcode="90210", result_city="Town")) == 50
+    assert grade_accuracy(GeocodeResult(result_city="Town", result_stateprov="CA")) == 40
+    assert grade_accuracy(GeocodeResult(result_stateprov="CA", result_country="US")) == 20
+    assert grade_accuracy(GeocodeResult(result_country="US")) == 10
+
+
+def test_grade_accuracy_zero_without_location_fields():
+    """A result with no location fields scores zero regardless of other data."""
+    assert grade_accuracy(GeocodeResult(match_type="tie")) == 0
+
+
+def test_grade_accuracy_cap_limits_top_tier():
+    """A provider cap lowers the top tier but leaves coarser tiers untouched."""
+    assert grade_accuracy(GeocodeResult(result_address="1 Main St"), cap=90) == 90
+    assert grade_accuracy(GeocodeResult(result_postalcode="90210"), cap=90) == 50
+
+
 class _FakeResponse:
-    """Stands in for a requests.Response so retry tests avoid the network."""
+    """Stands in for a requests.Response so provider tests avoid the network."""
 
     def __init__(self, text):
         self.text = text
