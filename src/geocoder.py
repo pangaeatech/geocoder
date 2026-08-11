@@ -24,7 +24,6 @@ from .api import (
     resolve_api_key,
 )
 
-
 CANONICAL_FIELDS = [
     "ID",
     "NAME",
