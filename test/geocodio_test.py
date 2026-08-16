@@ -42,9 +42,9 @@ def _candidate(accuracy_type, components, **overrides):
     return candidate
 
 
-def _batch(entries):
-    """Wraps per-key candidate lists in the keyed Geocodio batch envelope."""
-    return {"results": {key: {"response": {"results": candidates}} for key, candidates in entries.items()}}
+def _batch(*candidate_lists):
+    """Wraps ordered per-record candidate lists in the Geocodio batch envelope."""
+    return {"results": [{"response": {"results": candidates}} for candidates in candidate_lists]}
 
 
 ROOFTOP_COMPONENTS = {
@@ -87,14 +87,14 @@ def test_geocodio_requires_key():
 def test_geocodio_parses_rooftop(monkeypatch):
     """A rooftop match keeps its street address and grades to full accuracy."""
     captured = {}
-    _patch_response(monkeypatch, _batch({"0": [_candidate("rooftop", ROOFTOP_COMPONENTS)]}), captured)
+    _patch_response(monkeypatch, _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)]), captured)
 
     record = SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW", city="Washington", stateprov="DC", postalcode="20500")
     result = geocodio.GeocodioProvider("key").geocode([record])[0]
 
     assert captured["url"] == geocodio.GeocodioProvider.ENDPOINT
     assert captured["params"]["api_key"] == "key"
-    assert captured["json"] == {"0": record.address_string()}
+    assert captured["json"] == [record.address_string()]
     assert result.match_type == "exact"
     assert result.location_type == "rooftop"
     assert result.result_address == "1600 Pennsylvania Ave NW"
@@ -109,7 +109,7 @@ def test_geocodio_parses_rooftop(monkeypatch):
 
 def test_geocodio_caps_interpolated_below_rooftop(monkeypatch):
     """An interpolated match echoes a street address but is capped at block level."""
-    _patch_response(monkeypatch, _batch({"0": [_candidate("range_interpolation", ROOFTOP_COMPONENTS)]}))
+    _patch_response(monkeypatch, _batch([_candidate("range_interpolation", ROOFTOP_COMPONENTS)]))
 
     result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="1024 Chester Rd")])[0]
 
@@ -120,7 +120,7 @@ def test_geocodio_caps_interpolated_below_rooftop(monkeypatch):
 
 def test_geocodio_caps_place_at_city(monkeypatch):
     """A place centroid drops the missing street address and grades to city."""
-    _patch_response(monkeypatch, _batch({"0": [_candidate("place", PLACE_COMPONENTS)]}))
+    _patch_response(monkeypatch, _batch([_candidate("place", PLACE_COMPONENTS)]))
 
     result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="PO Box 1019", city="Pendleton", stateprov="SC")])[0]
 
@@ -132,7 +132,7 @@ def test_geocodio_caps_place_at_city(monkeypatch):
 def test_geocodio_street_without_number_is_not_rooftop(monkeypatch):
     """A street without a house number leaves the address blank so grading stays coarse."""
     components = {key: value for key, value in ROOFTOP_COMPONENTS.items() if key != "number"}
-    _patch_response(monkeypatch, _batch({"0": [_candidate("street_center", components)]}))
+    _patch_response(monkeypatch, _batch([_candidate("street_center", components)]))
 
     result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="Stornoway St")])[0]
 
@@ -142,7 +142,7 @@ def test_geocodio_street_without_number_is_not_rooftop(monkeypatch):
 
 def test_geocodio_empty_candidates_is_no_match(monkeypatch):
     """An entry with no candidates yields a no-match result rather than an error."""
-    _patch_response(monkeypatch, _batch({"0": []}))
+    _patch_response(monkeypatch, _batch([]))
 
     result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="Nowhere St")])[0]
 
@@ -151,38 +151,37 @@ def test_geocodio_empty_candidates_is_no_match(monkeypatch):
     assert result.match_notes == "No match"
 
 
-def test_geocodio_missing_key_is_no_match(monkeypatch):
-    """A record absent from the keyed response is reported as a no-match, not misaligned."""
-    _patch_response(monkeypatch, _batch({"0": [_candidate("rooftop", ROOFTOP_COMPONENTS)]}))
-
-    records = [
-        SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW"),
-        SourceRecord(internal_key=1, address="Nowhere St"),
-    ]
-    results = geocodio.GeocodioProvider("key").geocode(records)
-
-    assert results[0].accuracy == 100
-    assert results[1].match_type == "no_match"
-    assert results[1].match_notes == "No match"
-
-
-def test_geocodio_aligns_results_by_key(monkeypatch):
-    """Results are matched back by request key even when the response reorders them."""
+def test_geocodio_aligns_entries_by_position(monkeypatch):
+    """Ordered response entries are matched back to records by position."""
     payload = _batch(
-        {
-            "1": [_candidate("place", PLACE_COMPONENTS)],
-            "0": [_candidate("rooftop", ROOFTOP_COMPONENTS)],
-        }
+        [_candidate("rooftop", ROOFTOP_COMPONENTS)],
+        [],
+        [_candidate("place", PLACE_COMPONENTS)],
     )
     _patch_response(monkeypatch, payload)
 
     records = [
         SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW"),
-        SourceRecord(internal_key=1, address="Pendleton, SC"),
+        SourceRecord(internal_key=1, address="Nowhere St"),
+        SourceRecord(internal_key=2, address="Pendleton, SC"),
     ]
     results = geocodio.GeocodioProvider("key").geocode(records)
 
     assert results[0].location_type == "rooftop"
     assert results[0].accuracy == 100
-    assert results[1].location_type == "place"
-    assert results[1].accuracy == 40
+    assert results[1].match_type == "no_match"
+    assert results[1].match_notes == "No match"
+    assert results[2].location_type == "place"
+    assert results[2].accuracy == 40
+
+
+def test_geocodio_raises_on_entry_count_mismatch(monkeypatch):
+    """A response short of one entry per record fails loudly instead of misaligning."""
+    _patch_response(monkeypatch, _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)]))
+
+    records = [
+        SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW"),
+        SourceRecord(internal_key=1, address="Nowhere St"),
+    ]
+    with pytest.raises(ValueError):
+        geocodio.GeocodioProvider("key").geocode(records)

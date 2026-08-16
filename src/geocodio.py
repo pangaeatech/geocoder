@@ -8,7 +8,7 @@ Geocoder — Geocodio provider
 Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import requests
 
@@ -20,11 +20,11 @@ class GeocodioProvider(Provider):
     """
     Batch geocoder backed by the Geocodio API.
 
-    Records are submitted as a single JSON object keyed by their internal key and
-    matched back by that same key, so results stay aligned even when Geocodio
-    reorders or drops an entry. Requests require an API key, resolved from
-    --apiKey or the GEOCODIO_API_KEY environment variable, and cover U.S. and
-    Canadian addresses only.
+    Records are submitted as a JSON array of address strings; Geocodio returns
+    one result entry per input in the same order, so entries are matched back to
+    records by position and the batch is rejected if the counts differ. Requests
+    require an API key, resolved from --apiKey or the GEOCODIO_API_KEY
+    environment variable, and cover U.S. and Canadian addresses only.
 
     Accuracy is driven by the response ``accuracy_type`` rather than the returned
     address fields: Geocodio echoes a full formatted address even when it only
@@ -75,14 +75,16 @@ class GeocodioProvider(Provider):
         return [results_by_key.get(record.internal_key, GeocodeResult(match_notes="No match")) for record in records]
 
     def _geocode_batch(self, batch: List[SourceRecord], results_by_key: Dict[int, GeocodeResult]) -> None:
-        """Posts one batch and stores each result by internal key, matched on the request key."""
-        results = self._post_batch(batch).get("results", {})
-        for record in batch:
-            results_by_key[record.internal_key] = self._parse_entry(results.get(str(record.internal_key)))
+        """Posts one batch, verifies its entry count, and stores each result by internal key."""
+        entries = self._post_batch(batch)
+        if len(entries) != len(batch):
+            raise ValueError(f"Geocodio returned {len(entries)} entries for {len(batch)} submitted records; the batch response may have changed")
+        for record, entry in zip(batch, entries):
+            results_by_key[record.internal_key] = self._parse_entry(entry)
 
-    def _post_batch(self, batch: List[SourceRecord]) -> Dict:
-        """Posts one keyed batch through the retrying request helper and returns the decoded body."""
-        payload = {str(record.internal_key): record.address_string() for record in batch}
+    def _post_batch(self, batch: List[SourceRecord]) -> List[Dict]:
+        """Posts one batch through the retrying request helper and returns the ordered result entries."""
+        payload = [record.address_string() for record in batch]
         response = self._request_with_retry(
             lambda: requests.post(
                 self.ENDPOINT,
@@ -91,13 +93,13 @@ class GeocodioProvider(Provider):
                 timeout=self.TIMEOUT,
             )
         )
-        return response.json()
+        return response.json().get("results", [])
 
-    def _parse_entry(self, entry: Optional[Dict]) -> GeocodeResult:
+    def _parse_entry(self, entry: Dict) -> GeocodeResult:
         """Grades the best candidate for one input, or returns a no-match when none was found."""
-        matches = entry.get("response", {}).get("results", []) if entry else []
+        matches = entry.get("response", {}).get("results", [])
         if not matches:
-            return GeocodeResult(match_notes="No match", raw=entry or {})
+            return GeocodeResult(match_notes="No match", raw=entry)
         return self._parse_result(matches[0])
 
     def _parse_result(self, match: Dict) -> GeocodeResult:
