@@ -56,6 +56,27 @@ CITY_COMPONENTS = [
     {"short_name": "US", "types": ["country"]},
 ]
 
+MEXICO_COMPONENTS = [
+    {"short_name": "76", "types": ["street_number"]},
+    {"short_name": "C. 49", "types": ["route"]},
+    {"short_name": "Santa Margarita", "types": ["sublocality_level_1", "sublocality", "political"]},
+    {"short_name": "Cdad. del Carmen", "types": ["locality", "political"]},
+    {"short_name": "Camp.", "types": ["administrative_area_level_1", "political"]},
+    {"short_name": "24120", "types": ["postal_code"]},
+    {"short_name": "MX", "types": ["country", "political"]},
+]
+
+MEXICO_SUBPREMISE_COMPONENTS = [
+    {"short_name": "17", "types": ["subpremise"]},
+    {"short_name": "7", "types": ["street_number"]},
+    {"short_name": "Gral. Pedro Hinojosa", "types": ["route"]},
+    {"short_name": "Cd Industrial", "types": ["sublocality_level_1", "sublocality", "political"]},
+    {"short_name": "Heroica Matamoros", "types": ["locality", "political"]},
+    {"short_name": "Tamps.", "types": ["administrative_area_level_1", "political"]},
+    {"short_name": "87499", "types": ["postal_code"]},
+    {"short_name": "MX", "types": ["country", "political"]},
+]
+
 
 def _patch_response(monkeypatch, payload, captured=None):
     """Routes requests.get to a canned payload, optionally capturing the call args."""
@@ -123,15 +144,82 @@ def test_google_caps_approximate_at_city(monkeypatch):
     assert result.accuracy == 40
 
 
-def test_google_route_without_number_is_not_rooftop(monkeypatch):
-    """A route without a street number leaves the address blank so grading stays coarse."""
+def test_google_route_without_number_keeps_street_name(monkeypatch):
+    """A route without a street number is still returned, graded down to street level."""
     components = [component for component in ROOFTOP_COMPONENTS if component["types"] != ["street_number"]]
     _patch_response(monkeypatch, _result("GEOMETRIC_CENTER", components))
 
     result = google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="Stornoway St")])[0]
 
-    assert result.result_address == ""
-    assert result.accuracy == 50
+    assert result.result_address == "Pennsylvania Ave NW"
+    assert result.accuracy == 70
+
+
+def test_google_caps_numberless_rooftop_at_street(monkeypatch):
+    """A rooftop location_type cannot outrank street level without a street number."""
+    components = [component for component in ROOFTOP_COMPONENTS if component["types"] != ["street_number"]]
+    _patch_response(monkeypatch, _result("ROOFTOP", components))
+
+    result = google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="Stornoway St")])[0]
+
+    assert result.accuracy == 70
+
+
+def test_google_mexican_address_orders_number_after_route(monkeypatch):
+    """A Mexican address trails the street number and carries its sublocality."""
+    _patch_response(monkeypatch, _result("ROOFTOP", MEXICO_COMPONENTS))
+
+    record = SourceRecord(internal_key=0, address="76 Calle 49", city="Ciudad Del Carmen", stateprov="Campeche", postalcode="24166")
+    result = google.GoogleProvider("key").geocode([record])[0]
+
+    assert result.result_address == "C. 49 76, Santa Margarita"
+    assert result.result_city == "Cdad. del Carmen"
+    assert result.result_stateprov == "Camp."
+    assert result.result_postalcode == "24120"
+    assert result.accuracy == 100
+
+
+def test_google_mexican_address_hyphenates_subpremise(monkeypatch):
+    """A Mexican subpremise is hyphenated onto the street number."""
+    _patch_response(monkeypatch, _result("ROOFTOP", MEXICO_SUBPREMISE_COMPONENTS))
+
+    record = SourceRecord(internal_key=0, address="Calle Poniente 2 Pedro Hinojosa Y Norte 7, 17", city="Heroica Matamoros", stateprov="Tamaulipas")
+    result = google.GoogleProvider("key").geocode([record])[0]
+
+    assert result.result_address == "Gral. Pedro Hinojosa 7-17, Cd Industrial"
+    assert result.result_city == "Heroica Matamoros"
+    assert result.result_stateprov == "Tamps."
+
+
+def test_google_mexican_route_without_number_keeps_sublocality(monkeypatch):
+    """A Mexican route with no street number still carries its sublocality."""
+    components = [component for component in MEXICO_COMPONENTS if component["types"] != ["street_number"]]
+    _patch_response(monkeypatch, _result("GEOMETRIC_CENTER", components))
+
+    result = google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="Calle Mike Allen")])[0]
+
+    assert result.result_address == "C. 49, Santa Margarita"
+    assert result.accuracy == 70
+
+
+def test_google_prefers_named_sublocality_over_numeric_code(monkeypatch):
+    """A numeric sublocality_level_3 never displaces the colonia in sublocality_level_1."""
+    components = [{"short_name": "015", "types": ["political", "sublocality", "sublocality_level_3"]}] + MEXICO_COMPONENTS
+    _patch_response(monkeypatch, _result("ROOFTOP", components))
+
+    result = google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="76 Calle 49")])[0]
+
+    assert result.result_address == "C. 49 76, Santa Margarita"
+
+
+def test_google_sublocality_stays_out_of_us_address(monkeypatch):
+    """A U.S. address leads with its street number and omits any sublocality."""
+    components = ROOFTOP_COMPONENTS + [{"short_name": "Brooklyn", "types": ["sublocality_level_1", "sublocality", "political"]}]
+    _patch_response(monkeypatch, _result("ROOFTOP", components))
+
+    result = google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW")])[0]
+
+    assert result.result_address == "1600 Pennsylvania Ave NW"
 
 
 def test_google_flags_partial_match(monkeypatch):
