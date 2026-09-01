@@ -26,26 +26,33 @@ class MockProvider(Provider):
     name = "mock"
     requires_key = False
 
-    def geocode(self, records):
-        """Returns a fixed result per record, echoing the source address fields."""
-        results = []
+    def _fetch(self, records):
+        """Yields a canned response per record, echoing the source address fields."""
         for record in records:
-            results.append(
-                GeocodeResult(
-                    result_address=record.address,
-                    result_city=record.city,
-                    result_stateprov=record.stateprov,
-                    result_country=record.country,
-                    latitude="40.0",
-                    longitude="-75.0",
-                    match_type="exact",
-                    accuracy=100,
-                    location_type="rooftop",
-                    match_notes="",
-                    raw={"key": record.internal_key, "q": record.address_string()},
-                )
-            )
-        return results
+            yield record, {
+                "key": record.internal_key,
+                "q": record.address_string(),
+                "address": record.address,
+                "city": record.city,
+                "stateprov": record.stateprov,
+                "country": record.country,
+            }
+
+    def parse(self, raw):
+        """Rebuilds the echoed result from a raw response."""
+        return GeocodeResult(
+            result_address=raw["address"],
+            result_city=raw["city"],
+            result_stateprov=raw["stateprov"],
+            result_country=raw["country"],
+            latitude="40.0",
+            longitude="-75.0",
+            match_type="exact",
+            accuracy=100,
+            location_type="rooftop",
+            match_notes="",
+            raw=raw,
+        )
 
 
 def _make_workbook(path, sheets):
@@ -297,6 +304,59 @@ def test_write_output_sheet_length_mismatch_raises():
     records = [SourceRecord(internal_key=0, address="1 A St")]
     with pytest.raises(ValueError):
         write_output_sheet(openpyxl.Workbook(), "S", records, [], "mock", False)
+
+
+def test_main_cache_flag_persists_across_runs(tmp_path):
+    """--cache creates the file, and a rerun of the same input calls nothing."""
+    cache_path = tmp_path / "cache.sqlite"
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"], ["1 A St", "Town", "CA"]]})
+
+    calls = []
+
+    class _CountingMock(MockProvider):
+        """Records every record handed to the API so calls can be counted."""
+
+        def _fetch(self, records):
+            """Counts the fetched records before delegating to the mock response."""
+            calls.extend(record.address_string() for record in records)
+            yield from super()._fetch(records)
+
+    api.PROVIDERS["mock"] = _CountingMock
+    try:
+        main([str(infile), str(tmp_path / "a.xlsx"), "--api", "mock", "--cache", str(cache_path)])
+        assert calls == ["1 A St, Town, CA"]
+
+        main([str(infile), str(tmp_path / "b.xlsx"), "--api", "mock", "--cache", str(cache_path)])
+    finally:
+        del api.PROVIDERS["mock"]
+
+    assert calls == ["1 A St, Town, CA"]
+    assert cache_path.is_file()
+
+
+def test_main_missing_read_cache_exits(tmp_path):
+    """A --cacheRead file that does not exist exits before any provider work."""
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+
+    with pytest.raises(SystemExit):
+        main([str(infile), str(tmp_path / "out.xlsx"), "--api", "mock", "--cacheRead", str(tmp_path / "gone.sqlite")])
+
+
+def test_main_unusable_read_cache_exits(tmp_path):
+    """A --cacheRead file that is not a geocoder cache exits with a message."""
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+    foreign = tmp_path / "foreign.sqlite"
+    foreign.write_text("not a database")
+
+    api.PROVIDERS["mock"] = MockProvider
+    try:
+        with pytest.raises(SystemExit):
+            main([str(infile), str(tmp_path / "out.xlsx"), "--api", "mock", "--cacheRead", str(foreign)])
+    finally:
+        del api.PROVIDERS["mock"]
 
 
 def test_main_runs_census_provider(tmp_path, monkeypatch):

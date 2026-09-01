@@ -10,7 +10,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 
 import csv
 import io
-from typing import Dict, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 import requests
 
@@ -54,9 +54,25 @@ class CensusProvider(Provider):
         "block",
     ]
 
-    def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
+    def cache_key(self, record: SourceRecord) -> str:
         """
-        Geocodes records in batches and returns one result per record, in order.
+        Builds the key from the components Census is sent, plus the pinned dataset.
+
+        Country is excluded because the addressbatch CSV has no country column, so
+        two rows differing only in country resolve to the same request. The
+        benchmark and vintage are included because they select which dataset
+        answers the query, and moving off Census2020 would make stored responses
+        answers to a different question.
+        """
+        parts = [record.address, record.city, record.stateprov, record.postalcode, self.BENCHMARK, self.VINTAGE]
+        return "|".join(parts)
+
+    def _fetch(self, records: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
+        """
+        Posts records in batches, yielding each record with its response row.
+
+        Yielding per batch rather than per run means an interrupted job keeps
+        every batch that already came back.
 
         Parameters
         ----------
@@ -65,23 +81,24 @@ class CensusProvider(Provider):
 
         Return
         ----------
-        List[GeocodeResult]
-            One result per input record, aligned by position.
+        Iterator[Tuple[SourceRecord, Dict[str, Any]]]
+            Each record paired with its raw Census response row.
         """
-        results_by_key: Dict[int, GeocodeResult] = {}
         for start in range(0, len(records), self.BATCH_SIZE):
-            self._geocode_batch(records[start : start + self.BATCH_SIZE], results_by_key)
+            yield from self._fetch_batch(records[start : start + self.BATCH_SIZE])
 
-        return [results_by_key.get(record.internal_key, GeocodeResult(match_notes="No match")) for record in records]
-
-    def _geocode_batch(self, batch: List[SourceRecord], results_by_key: Dict[int, GeocodeResult]) -> None:
-        """Posts one CSV batch, verifies its row count, and stores each result by internal key."""
+    def _fetch_batch(self, batch: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
+        """Posts one CSV batch, verifies its row count, and matches rows back by internal key."""
         response = self._post_batch(batch)
         rows = [row for row in csv.reader(io.StringIO(response.text)) if row]
         if len(rows) != len(batch):
             raise ValueError(f"Census returned {len(rows)} rows for {len(batch)} submitted records; the service or benchmark may have changed")
+
+        records_by_key = {record.internal_key: record for record in batch}
         for row in rows:
-            results_by_key[int(row[0])] = self._parse_row(row)
+            record = records_by_key.get(int(row[0]))
+            if record is not None:
+                yield record, self._build_raw(row)
 
     def _post_batch(self, batch: List[SourceRecord]) -> requests.Response:
         """Posts one CSV batch through the retrying request helper."""
@@ -112,27 +129,44 @@ class CensusProvider(Provider):
             )
         return buffer.getvalue()
 
-    def _parse_row(self, row: List[str]) -> GeocodeResult:
+    def _build_raw(self, row: List[str]) -> Dict[str, Any]:
+        """
+        Names the positional fields of one response row, validating a match first.
+
+        Reading the headerless response by position is only safe while the pinned
+        layout holds, so a match row is checked here, where it arrives from the
+        network, and never again. Everything downstream reads the named fields.
+
+        The echoed id is dropped: it is this run's internal key, which carries no
+        meaning once the response outlives the run that fetched it.
+        """
+        status = row[2] if len(row) > 2 else "No_Match"
+        if status == "Match":
+            self._check_layout(row)
+
+        raw = dict(zip(self.RESPONSE_FIELDS, row))
+        raw.pop("id", None)
+        return raw
+
+    def parse(self, raw: Dict[str, Any]) -> GeocodeResult:
         """
         Converts one Census response row into a normalized GeocodeResult.
 
         Accuracy is graded from the populated result fields rather than the
         Census match type, so it reflects how specific the returned location is.
         """
-        result = self._build_result(row)
+        result = self._build_result(raw)
         result.accuracy = grade_accuracy(result, self.MAX_ACCURACY)
         return result
 
-    def _build_result(self, row: List[str]) -> GeocodeResult:
+    def _build_result(self, raw: Dict[str, Any]) -> GeocodeResult:
         """Maps a Census response row to a result without scoring its accuracy."""
-        raw = dict(zip(self.RESPONSE_FIELDS, row))
-        status = row[2] if len(row) > 2 else "No_Match"
+        status = raw.get("match_status", "No_Match")
 
         if status == "Match":
-            self._check_layout(row)
-            exact = row[3].strip().lower() == "exact"
-            address, city, stateprov, postalcode = self._split_address(row[4])
-            longitude, latitude = self._split_coordinates(row[5])
+            exact = raw.get("match_type", "").strip().lower() == "exact"
+            address, city, stateprov, postalcode = self._split_address(raw.get("matched_address", ""))
+            longitude, latitude = self._split_coordinates(raw.get("coordinates", ""))
             return GeocodeResult(
                 result_id=raw.get("tigerline_id", ""),
                 result_address=address,

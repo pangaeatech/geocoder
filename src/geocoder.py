@@ -23,6 +23,7 @@ from .api import (
     SourceRecord,
     resolve_api_key,
 )
+from .cache import Cache, missing_files
 
 CANONICAL_FIELDS = [
     "ID",
@@ -333,6 +334,20 @@ def parse_args(argv: Optional[List[str]] = None):
         help="use the worksheet name as COUNTRY when a row's country is blank",
     )
     parser.add_argument(
+        "--cache",
+        default=None,
+        metavar="FILE",
+        help="SQLite cache of prior API responses, read and written (created if absent)",
+    )
+    parser.add_argument(
+        "--cacheRead",
+        dest="cache_read",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="existing SQLite cache to read but never write; repeatable",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="add a RAW_MATCH column populated with raw provider JSON",
@@ -352,8 +367,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     Raises
     ----------
     SystemExit
-        If the input file is missing, the output file already exists, the api is
-        unknown, or a required API key is not configured.
+        If the input file is missing, the output file already exists, a read-only
+        cache is missing or unusable, the api is unknown, or a required API key is
+        not configured.
     """
     load_dotenv()
     args = parse_args(argv)
@@ -362,6 +378,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         raise SystemExit(f"error: input file '{args.infile}' does not exist")
     if os.path.exists(args.outfile):
         raise SystemExit(f"error: output file '{args.outfile}' already exists")
+
+    absent = missing_files(args.cache_read)
+    if absent:
+        raise SystemExit(f"error: read-only cache file(s) do not exist: {', '.join(absent)}")
 
     provider_cls = PROVIDERS.get(args.api)
     if provider_cls is None:
@@ -374,15 +394,20 @@ def main(argv: Optional[List[str]] = None) -> None:
         if not api_key:
             raise SystemExit(f"error: api '{args.api}' requires an API key " f"(pass --apiKey or set {KEY_ENV_VARS[args.api]})")
 
-    provider = provider_cls(api_key)
-    process_workbook(
-        args.infile,
-        args.outfile,
-        provider,
-        worksheet=args.worksheet,
-        country_per_sheet=args.country_per_sheet,
-        debug=args.debug,
-    )
+    try:
+        cache = Cache(args.cache, args.cache_read)
+    except ValueError as error:
+        raise SystemExit(f"error: {error}") from error
+
+    with cache:
+        process_workbook(
+            args.infile,
+            args.outfile,
+            provider_cls(api_key, cache),
+            worksheet=args.worksheet,
+            country_per_sheet=args.country_per_sheet,
+            debug=args.debug,
+        )
     print(f"wrote {args.outfile}")
 
 

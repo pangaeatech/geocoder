@@ -162,3 +162,51 @@ def test_census_raises_on_row_count_mismatch(monkeypatch):
     ]
     with pytest.raises(ValueError):
         census.CensusProvider().geocode(records)
+
+
+def test_census_cache_key_ignores_country_and_pins_dataset():
+    """The key covers the posted components and the dataset, but not the unsent country."""
+    provider = census.CensusProvider()
+    usa = SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA", postalcode="90210", country="US")
+    blank = SourceRecord(internal_key=1, address="1 Main St", city="Town", stateprov="CA", postalcode="90210")
+
+    assert provider.cache_key(usa) == provider.cache_key(blank)
+    assert census.CensusProvider.BENCHMARK in provider.cache_key(usa)
+    assert census.CensusProvider.VINTAGE in provider.cache_key(usa)
+
+
+def test_census_posts_each_distinct_address_once(monkeypatch):
+    """Repeated addresses are collapsed so the posted CSV carries one row each."""
+    posted = []
+
+    def fake_post(_url, files=None, **_kwargs):
+        posted.append(files["addressFile"][1])
+        keys = [line.split(",")[0] for line in files["addressFile"][1].splitlines() if line]
+        return _FakeResponse("".join(f'"{key}","q","No_Match"\r\n' for key in keys))
+
+    monkeypatch.setattr(census.requests, "post", fake_post)
+
+    records = [
+        SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA"),
+        SourceRecord(internal_key=1, address="1 MAIN  ST", city="Town", stateprov="CA"),
+        SourceRecord(internal_key=2, address="2 Oak St", city="Town", stateprov="CA"),
+    ]
+    results = census.CensusProvider().geocode(records)
+
+    assert len(posted) == 1
+    assert len([line for line in posted[0].splitlines() if line]) == 2
+    assert len(results) == 3
+
+
+def test_census_raw_drops_the_run_local_id(monkeypatch):
+    """The echoed internal key is not kept, since it means nothing outside its run."""
+
+    def fake_post(*_args, **_kwargs):
+        return _FakeResponse('"0","1 Main St, Town, CA","Match","Exact","1 MAIN ST, TOWN, CA, 90210","-118.0,34.0","1","L","06","037","1","1"\r\n')
+
+    monkeypatch.setattr(census.requests, "post", fake_post)
+
+    result = census.CensusProvider().geocode([SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA")])[0]
+
+    assert "id" not in result.raw
+    assert result.raw["match_status"] == "Match"

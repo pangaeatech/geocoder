@@ -8,7 +8,7 @@ Geocoder — Google Geocoding API provider
 Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
-from typing import Dict, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 import requests
 
@@ -54,9 +54,13 @@ class GoogleProvider(Provider):
         "country": "result_country",
     }
 
-    def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
+    def _fetch(self, records: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
         """
-        Geocodes each record with a single request and returns results in order.
+        Queries one address per request, yielding each response as it arrives.
+
+        A status other than a match or an empty result means the request itself
+        failed — a rejected key or an exhausted quota — so it is raised here rather
+        than yielded, keeping a failure out of the cache and off the output.
 
         Parameters
         ----------
@@ -65,21 +69,20 @@ class GoogleProvider(Provider):
 
         Return
         ----------
-        List[GeocodeResult]
-            One result per input record, aligned by position.
+        Iterator[Tuple[SourceRecord, Dict[str, Any]]]
+            Each record paired with its raw Google response.
+
+        Raises
+        ----------
+        ValueError
+            If Google reports a status other than OK or ZERO_RESULTS.
         """
-        return [self._geocode_one(record) for record in records]
-
-    def _geocode_one(self, record: SourceRecord) -> GeocodeResult:
-        """Queries one address and grades the parsed response by its location_type."""
-        payload = self._request(record.address_string())
-        status = payload.get("status", "UNKNOWN")
-
-        if status == "OK":
-            return self._parse_result(payload["results"][0])
-        if status == "ZERO_RESULTS":
-            return GeocodeResult(match_notes="No match", raw=payload)
-        raise ValueError(f"Google geocoding failed with status {status!r}: {payload.get('error_message', '')}".strip())
+        for record in records:
+            payload = self._request(record.address_string())
+            status = payload.get("status", "UNKNOWN")
+            if status not in ("OK", "ZERO_RESULTS"):
+                raise ValueError(f"Google geocoding failed with status {status!r}: {payload.get('error_message', '')}".strip())
+            yield record, payload
 
     def _request(self, address: str) -> Dict:
         """Sends one geocoding request through the retrying request helper."""
@@ -92,21 +95,31 @@ class GoogleProvider(Provider):
         )
         return response.json()
 
-    def _parse_result(self, match: Dict) -> GeocodeResult:
+    def parse(self, raw: Dict[str, Any]) -> GeocodeResult:
         """
-        Converts one Google result into a normalized GeocodeResult.
+        Converts one Google response into a normalized GeocodeResult.
 
         The graded accuracy is capped at the tier implied by ``location_type`` so
         an interpolated or centroid match cannot report rooftop precision on the
         strength of the echoed address fields.
         """
-        result = self._build_result(match)
+        if raw.get("status") != "OK":
+            return GeocodeResult(match_notes="No match", raw=raw)
+
+        result = self._build_result(raw)
         cap = self.LOCATION_TYPE_ACCURACY.get(result.location_type, AccuracyLevel.NONE)
         result.accuracy = grade_accuracy(result, cap)
         return result
 
-    def _build_result(self, match: Dict) -> GeocodeResult:
-        """Maps a Google result to a GeocodeResult without scoring its accuracy."""
+    def _build_result(self, raw: Dict[str, Any]) -> GeocodeResult:
+        """
+        Maps the best Google match to a GeocodeResult without scoring its accuracy.
+
+        The whole response envelope is kept as the raw value rather than the single
+        match it was read from, so what is cached and reported is what Google
+        actually said.
+        """
+        match = raw["results"][0]
         components = self._extract_components(match)
         geometry = match.get("geometry", {})
         location = geometry.get("location", {})
@@ -122,7 +135,7 @@ class GoogleProvider(Provider):
             longitude=str(location.get("lng", "")),
             match_type="partial" if match.get("partial_match") else "exact",
             location_type=geometry.get("location_type", ""),
-            raw=match,
+            raw=raw,
         )
 
     def _extract_components(self, match: Dict) -> Dict[str, str]:
