@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
+DEFAULT_CACHE_FILE = "geocoder-cache.sqlite"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
     api TEXT NOT NULL,

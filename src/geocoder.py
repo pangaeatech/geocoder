@@ -23,7 +23,7 @@ from .api import (
     SourceRecord,
     resolve_api_key,
 )
-from .cache import Cache, missing_files
+from .cache import DEFAULT_CACHE_FILE, Cache, missing_files
 
 CANONICAL_FIELDS = [
     "ID",
@@ -333,11 +333,18 @@ def parse_args(argv: Optional[List[str]] = None):
         action="store_true",
         help="use the worksheet name as COUNTRY when a row's country is blank",
     )
-    parser.add_argument(
+    cache_group = parser.add_mutually_exclusive_group()
+    cache_group.add_argument(
         "--cache",
         default=None,
         metavar="FILE",
-        help="SQLite cache of prior API responses, read and written (created if absent)",
+        help=f"SQLite cache of prior API responses, read and written " f"(default: {DEFAULT_CACHE_FILE} in the working directory)",
+    )
+    cache_group.add_argument(
+        "--noCache",
+        dest="no_cache",
+        action="store_true",
+        help="do not read or write a cache file; repeated addresses within the run are still collapsed",
     )
     parser.add_argument(
         "--cacheRead",
@@ -394,12 +401,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         if not api_key:
             raise SystemExit(f"error: api '{args.api}' requires an API key " f"(pass --apiKey or set {KEY_ENV_VARS[args.api]})")
 
+    cache_path = None if args.no_cache else args.cache or DEFAULT_CACHE_FILE
     try:
-        cache = Cache(args.cache, args.cache_read)
+        cache = Cache(cache_path, args.cache_read)
     except ValueError as error:
         raise SystemExit(f"error: {error}") from error
 
     with cache:
+        if cache_path:
+            print(f"using cache {os.path.abspath(cache_path)}")
         process_workbook(
             args.infile,
             args.outfile,

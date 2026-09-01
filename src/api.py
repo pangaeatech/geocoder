@@ -204,6 +204,16 @@ class Provider(ABC):
         stays live: a stored response is always scored by the current rules rather
         than the ones in force when it was fetched. This must be a pure mapping
         over the response and must not call the API.
+
+        Parameters
+        ----------
+        raw : Dict[str, Any]
+            One response as the provider returned it.
+
+        Return
+        ----------
+        GeocodeResult
+            The normalized result that response describes.
         """
 
     def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
@@ -225,8 +235,7 @@ class Provider(ABC):
         List[GeocodeResult]
             One result per input record, aligned by position.
         """
-        queries = [self.cache_key(record) for record in records]
-        keys = [normalize_query(query) for query in queries]
+        keys = [normalize_query(self.cache_key(record)) for record in records]
         responses = self.cache.lookup(self.name, keys)
 
         pending: Dict[str, SourceRecord] = {}

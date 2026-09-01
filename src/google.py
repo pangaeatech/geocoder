@@ -102,6 +102,16 @@ class GoogleProvider(Provider):
         The graded accuracy is capped at the tier implied by ``location_type`` so
         an interpolated or centroid match cannot report rooftop precision on the
         strength of the echoed address fields.
+
+        Parameters
+        ----------
+        raw : Dict[str, Any]
+            One Google response envelope.
+
+        Return
+        ----------
+        GeocodeResult
+            The normalized, graded result that response describes.
         """
         if raw.get("status") != "OK":
             return GeocodeResult(match_notes="No match", raw=raw)

@@ -17,6 +17,7 @@ from src import api
 from src import census
 from src import geocoder
 from src.api import GeocodeResult, Provider, SourceRecord
+from src.cache import DEFAULT_CACHE_FILE
 from src.geocoder import detect_columns, main, process_workbook, write_output_sheet
 
 
@@ -292,11 +293,50 @@ def test_main_runs_registered_provider(tmp_path):
 
     api.PROVIDERS["mock"] = MockProvider
     try:
-        main([str(infile), str(outfile), "--api", "mock"])
+        main([str(infile), str(outfile), "--api", "mock", "--noCache"])
     finally:
         del api.PROVIDERS["mock"]
 
     assert outfile.exists()
+
+
+def test_main_defaults_to_a_cache_in_the_working_directory(tmp_path, monkeypatch):
+    """With no cache flag the default file is created beside the working directory."""
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+    monkeypatch.chdir(tmp_path)
+
+    api.PROVIDERS["mock"] = MockProvider
+    try:
+        main([str(infile), "out.xlsx", "--api", "mock"])
+    finally:
+        del api.PROVIDERS["mock"]
+
+    assert (tmp_path / DEFAULT_CACHE_FILE).is_file()
+
+
+def test_main_no_cache_writes_nothing(tmp_path, monkeypatch):
+    """--noCache leaves no cache file behind, including the default one."""
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+    monkeypatch.chdir(tmp_path)
+
+    api.PROVIDERS["mock"] = MockProvider
+    try:
+        main([str(infile), "out.xlsx", "--api", "mock", "--noCache"])
+    finally:
+        del api.PROVIDERS["mock"]
+
+    assert not (tmp_path / DEFAULT_CACHE_FILE).exists()
+
+
+def test_main_rejects_cache_and_no_cache_together(tmp_path):
+    """Naming a cache file while disabling the cache is contradictory and exits."""
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+
+    with pytest.raises(SystemExit):
+        main([str(infile), str(tmp_path / "out.xlsx"), "--api", "mock", "--cache", str(tmp_path / "c.sqlite"), "--noCache"])
 
 
 def test_write_output_sheet_length_mismatch_raises():
@@ -354,7 +394,7 @@ def test_main_unusable_read_cache_exits(tmp_path):
     api.PROVIDERS["mock"] = MockProvider
     try:
         with pytest.raises(SystemExit):
-            main([str(infile), str(tmp_path / "out.xlsx"), "--api", "mock", "--cacheRead", str(foreign)])
+            main([str(infile), str(tmp_path / "out.xlsx"), "--api", "mock", "--noCache", "--cacheRead", str(foreign)])
     finally:
         del api.PROVIDERS["mock"]
 
@@ -378,7 +418,7 @@ def test_main_runs_census_provider(tmp_path, monkeypatch):
 
     monkeypatch.setattr(census.requests, "post", fake_post)
 
-    main([str(infile), str(outfile), "--api", "census"])
+    main([str(infile), str(outfile), "--api", "census", "--noCache"])
 
     sheet = openpyxl.load_workbook(outfile)["S"]
     header = [cell.value for cell in sheet[1]]

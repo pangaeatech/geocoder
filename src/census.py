@@ -63,6 +63,16 @@ class CensusProvider(Provider):
         benchmark and vintage are included because they select which dataset
         answers the query, and moving off Census2020 would make stored responses
         answers to a different question.
+
+        Parameters
+        ----------
+        record : SourceRecord
+            The record whose query is being composed.
+
+        Return
+        ----------
+        str
+            The query text identifying this record's response.
         """
         parts = [record.address, record.city, record.stateprov, record.postalcode, self.BENCHMARK, self.VINTAGE]
         return "|".join(parts)
@@ -154,6 +164,16 @@ class CensusProvider(Provider):
 
         Accuracy is graded from the populated result fields rather than the
         Census match type, so it reflects how specific the returned location is.
+
+        Parameters
+        ----------
+        raw : Dict[str, Any]
+            One named Census response row.
+
+        Return
+        ----------
+        GeocodeResult
+            The normalized, graded result that row describes.
         """
         result = self._build_result(raw)
         result.accuracy = grade_accuracy(result, self.MAX_ACCURACY)
