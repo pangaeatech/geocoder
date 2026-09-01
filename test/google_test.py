@@ -202,6 +202,16 @@ def test_google_mexican_route_without_number_keeps_sublocality(monkeypatch):
     assert result.accuracy == 70
 
 
+def test_google_prefers_named_sublocality_over_numeric_code(monkeypatch):
+    """A numeric sublocality_level_3 never displaces the colonia in sublocality_level_1."""
+    components = [{"short_name": "015", "types": ["political", "sublocality", "sublocality_level_3"]}] + MEXICO_COMPONENTS
+    _patch_response(monkeypatch, _result("ROOFTOP", components))
+
+    result = google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="76 Calle 49")])[0]
+
+    assert result.result_address == "C. 49 76, Santa Margarita"
+
+
 def test_google_sublocality_stays_out_of_us_address(monkeypatch):
     """A U.S. address leads with its street number and omits any sublocality."""
     components = ROOFTOP_COMPONENTS + [{"short_name": "Brooklyn", "types": ["sublocality_level_1", "sublocality", "political"]}]

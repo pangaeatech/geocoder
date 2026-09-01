@@ -54,7 +54,6 @@ class GoogleProvider(Provider):
         "street_number": "street_number",
         "subpremise": "subpremise",
         "route": "route",
-        "sublocality": "sublocality",
         "sublocality_level_1": "sublocality",
         "locality": "result_city",
         "administrative_area_level_1": "result_stateprov",
