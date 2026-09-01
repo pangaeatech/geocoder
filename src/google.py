@@ -30,7 +30,12 @@ class GoogleProvider(Provider):
     interpolated a point or fell back to an area centroid, so grading the fields
     alone would report those coarser matches as rooftop precision. Each
     location_type therefore caps the graded score at the precision it actually
-    represents.
+    represents, and a match resolved to a route with no street number is capped
+    lower still.
+
+    Street addresses are assembled from the response components in the
+    convention of the country they belong to, since Mexican addresses order and
+    punctuate their parts differently from North American ones.
     """
 
     requires_key = True
@@ -47,12 +52,17 @@ class GoogleProvider(Provider):
 
     COMPONENT_FIELDS = {
         "street_number": "street_number",
+        "subpremise": "subpremise",
         "route": "route",
+        "sublocality": "sublocality",
+        "sublocality_level_1": "sublocality",
         "locality": "result_city",
         "administrative_area_level_1": "result_stateprov",
         "postal_code": "result_postalcode",
         "country": "result_country",
     }
+
+    ROUTE_FIRST_COUNTRIES = {"MX"}
 
     def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
         """
@@ -100,14 +110,26 @@ class GoogleProvider(Provider):
         an interpolated or centroid match cannot report rooftop precision on the
         strength of the echoed address fields.
         """
-        result = self._build_result(match)
-        cap = self.LOCATION_TYPE_ACCURACY.get(result.location_type, AccuracyLevel.NONE)
-        result.accuracy = grade_accuracy(result, cap)
+        components = self._extract_components(match)
+        result = self._build_result(match, components)
+        result.accuracy = grade_accuracy(result, self._accuracy_cap(result, components))
         return result
 
-    def _build_result(self, match: Dict) -> GeocodeResult:
+    def _accuracy_cap(self, result: GeocodeResult, components: Dict[str, str]) -> AccuracyLevel:
+        """
+        Returns the highest accuracy the match can claim.
+
+        The ``location_type`` sets the ceiling, and an address without a street
+        number lowers it to street level: the route alone resolves no finer than
+        the geographic centre of the whole street.
+        """
+        cap = self.LOCATION_TYPE_ACCURACY.get(result.location_type, AccuracyLevel.NONE)
+        if components.get("street_number"):
+            return cap
+        return min(cap, AccuracyLevel.STREET)
+
+    def _build_result(self, match: Dict, components: Dict[str, str]) -> GeocodeResult:
         """Maps a Google result to a GeocodeResult without scoring its accuracy."""
-        components = self._extract_components(match)
         geometry = match.get("geometry", {})
         location = geometry.get("location", {})
 
@@ -135,17 +157,32 @@ class GoogleProvider(Provider):
                     extracted[field_name] = component.get("short_name", "")
         return extracted
 
-    @staticmethod
-    def _street_address(components: Dict[str, str]) -> str:
+    @classmethod
+    def _street_address(cls, components: Dict[str, str]) -> str:
         """
-        Joins street number and route into a street address, or blank without a number.
+        Assembles the street address in the convention of the result's country.
 
-        A route without a street number is only street-level, so leaving the
-        address blank lets grade_accuracy fall through to the coarser field the
-        result actually resolved.
+        Most countries lead with the street number, but those in
+        ROUTE_FIRST_COUNTRIES place it after the route, hyphenate any subpremise
+        onto it, and append the sublocality, because a street number there is
+        only unique within its sublocality.
+
+        A route with no street number still yields an address, since the street
+        name alone locates the row to that street; _accuracy_cap grades such a
+        result no higher than street level.
         """
-        number = components.get("street_number", "")
         route = components.get("route", "")
-        if number and route:
-            return f"{number} {route}"
-        return ""
+        if not route:
+            return ""
+
+        number = components.get("street_number", "")
+        if components.get("result_country", "") not in cls.ROUTE_FIRST_COUNTRIES:
+            return f"{number} {route}" if number else route
+
+        subpremise = components.get("subpremise", "")
+        if number and subpremise:
+            number = f"{number}-{subpremise}"
+
+        address = f"{route} {number}" if number else route
+        sublocality = components.get("sublocality", "")
+        return f"{address}, {sublocality}" if sublocality else address
