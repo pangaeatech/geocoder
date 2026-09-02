@@ -2,3 +2,4 @@
 
 from . import census
 from . import geocodio
+from . import google
