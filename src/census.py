@@ -58,11 +58,8 @@ class CensusProvider(Provider):
         """
         Builds the key from the components Census is sent, plus the pinned dataset.
 
-        Country is excluded because the addressbatch CSV has no country column, so
-        two rows differing only in country resolve to the same request. The
-        benchmark and vintage are included because they select which dataset
-        answers the query, and moving off Census2020 would make stored responses
-        answers to a different question.
+        Country is excluded because the addressbatch CSV has no country column,
+        while the benchmark and vintage select which dataset answers the query.
 
         Parameters
         ----------
@@ -143,12 +140,8 @@ class CensusProvider(Provider):
         """
         Names the positional fields of one response row, validating a match first.
 
-        Reading the headerless response by position is only safe while the pinned
-        layout holds, so a match row is checked here, where it arrives from the
-        network, and never again. Everything downstream reads the named fields.
-
-        The echoed id is dropped: it is this run's internal key, which carries no
-        meaning once the response outlives the run that fetched it.
+        The pinned layout is checked here, where the row arrives from the network,
+        and the echoed id is dropped as it is only meaningful within this run.
         """
         status = row[2] if len(row) > 2 else "No_Match"
         if status == "Match":

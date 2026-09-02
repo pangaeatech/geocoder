@@ -32,10 +32,9 @@ def normalize_query(query: str) -> str:
     """
     Canonicalizes a provider query into the key its response is stored under.
 
-    Geocoders ignore letter case and runs of whitespace, so folding both lets
-    "123 Main St" and "123  MAIN  ST" share a single cached response rather than
-    costing two identical API calls. Nothing else is altered: punctuation and
-    abbreviations can change what a geocoder returns, so they are left alone.
+    Letter case and runs of whitespace are folded so equivalent queries share one
+    cached response; nothing else is altered, since punctuation and abbreviations
+    can change what a geocoder returns.
 
     Parameters
     ----------
@@ -54,20 +53,8 @@ class Cache:
     """
     A SQLite-backed store of raw provider responses keyed by the query that produced them.
 
-    The cache is never a source of truth. It holds only what a provider actually
-    returned, so deleting any or all of its files changes nothing about the output
-    beyond how many API calls a run costs. Results are parsed from the stored
-    response on every run, which keeps a cached row scored by the current grading
-    rules rather than the ones in force when it was fetched.
-
-    One table serves every provider, so adding a provider needs no schema change
-    and consolidating two files is a single statement::
-
-        ATTACH 'other.sqlite' AS other;
-        INSERT OR IGNORE INTO cache SELECT * FROM other.cache;
-
-    A cache with no writable path and no readers is a working no-op, which lets
-    providers use one unconditionally.
+    It is never a source of truth: deleting a cache file changes nothing but how
+    many API calls a run costs, and one table serves every provider.
     """
 
     COMMIT_INTERVAL = 250
@@ -149,10 +136,8 @@ class Cache:
         """
         Fetches the stored responses for the given keys, writable cache first.
 
-        Each key is looked up in the writable cache and then in each read-only
-        cache, and the first file holding it wins. Keys with no stored response
-        are absent from the result. Lookups are chunked so a run of any size stays
-        within the SQLite limit on bound parameters.
+        The first file holding a key wins, and keys with no stored response are
+        absent from the result.
 
         Parameters
         ----------
@@ -187,8 +172,7 @@ class Cache:
         Records one provider response, committing once a batch has accumulated.
 
         Committing as the run proceeds means a crash costs only the calls made
-        since the last commit rather than every call made so far. Nothing is
-        written when no writable cache is configured.
+        since the last commit.
 
         Parameters
         ----------

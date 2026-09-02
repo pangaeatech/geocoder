@@ -145,10 +145,8 @@ class Provider(ABC):
     """
     Base class for geocoding providers; subclasses self-register via @register.
 
-    Subclasses supply three pieces and inherit the rest: ``_fetch`` calls the API,
-    ``parse`` turns one raw response into a result, and ``cache_key`` names the
-    query a record resolves to. Deduplication and caching are handled once here so
-    no provider has to repeat them.
+    Subclasses supply ``_fetch``, ``parse``, and ``cache_key``; deduplication and
+    caching are handled once here so no provider repeats them.
     """
 
     name: str = ""
@@ -165,11 +163,8 @@ class Provider(ABC):
         """
         Returns the query text this provider would send for the given record.
 
-        Two records with the same key are answered by a single API call, so the
-        key must cover everything that changes the response — the address
-        components a provider actually submits plus any pinned request parameters
-        that steer the result. Providers whose query is not the full address
-        override this.
+        Two records with the same key are answered by a single API call, so the key
+        must cover everything that changes the response.
 
         Parameters
         ----------
@@ -188,11 +183,8 @@ class Provider(ABC):
         """
         Yields each record paired with its raw provider response, as replies arrive.
 
-        Yielding rather than returning lets the caller cache responses at whatever
-        granularity the provider produces them, so an interrupted run keeps the
-        calls it already paid for. Only responses that have been validated against
-        the provider's expected shape may be yielded, because everything yielded is
-        cached; a malformed or failed response must raise instead.
+        Everything yielded is cached, so only responses validated against the
+        provider's expected shape may be yielded; a failed response must raise.
         """
 
     @abstractmethod
@@ -200,10 +192,8 @@ class Provider(ABC):
         """
         Converts one raw provider response into a normalized, graded GeocodeResult.
 
-        Cached and freshly fetched responses both come through here, so grading
-        stays live: a stored response is always scored by the current rules rather
-        than the ones in force when it was fetched. This must be a pure mapping
-        over the response and must not call the API.
+        Cached and freshly fetched responses both come through here, so a stored
+        response is always scored by the current grading rules.
 
         Parameters
         ----------
@@ -220,10 +210,8 @@ class Provider(ABC):
         """
         Returns one GeocodeResult per input record, in the same order.
 
-        Records sharing a query are collapsed to a single API call, and any query
-        already in the cache skips the API entirely, so a list of 5000 addresses
-        costs one call per distinct address never seen before. Deduplication
-        applies even with no cache file configured.
+        Records sharing a query are collapsed to a single API call and cached
+        queries skip the API entirely, with or without a cache file configured.
 
         Parameters
         ----------
