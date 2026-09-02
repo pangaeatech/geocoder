@@ -231,6 +231,9 @@ class Provider(ABC):
             if key not in responses and key not in pending:
                 pending[key] = record
 
+        if records:
+            print(f"{len(records)} rows, {len(responses) + len(pending)} distinct queries: {len(responses)} from cache, {len(pending)} to fetch")
+
         if pending:
             for record, raw in self._fetch(list(pending.values())):
                 query = self.cache_key(record)
