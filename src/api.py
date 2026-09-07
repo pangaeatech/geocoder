@@ -9,6 +9,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -21,6 +22,76 @@ KEY_ENV_VARS = {
     "geocodio": "GEOCODIO_API_KEY",
     "google": "GOOGLE_GEOCODING_API_KEY",
 }
+
+LEGAL_SUBDIVISION = r"(?:[NS][EW]|\d{1,2})"
+SURVEY_GRID = r"\d{1,2}[-\s]\d{1,3}[-\s]\d{1,2}"
+
+DOMINION_LAND_SURVEY = rf"""
+    (?:{LEGAL_SUBDIVISION}[-\s]){{1,2}}         # quarter section and legal subdivision
+    {SURVEY_GRID}                               # section, township and range
+    (?:[-\s]?[WE]\s?[1-6]?M?|[-\s][1-6]M?)      # meridian, however it is written
+  | {SURVEY_GRID}                               # section, township and range, unqualified
+    [-\s]?[WE]\s?[1-6]M?                        # meridian, which must then be lettered and numbered
+"""
+
+NATIONAL_TOPOGRAPHIC_SYSTEM = r"""
+    [A-L]-\d{1,3}-[A-L]                         # unit, block and quarter of the map sheet
+    [-\s/]{0,2}                                 # separator, written inconsistently or omitted
+    \d{2,3}-[A-P]-\d{1,2}                       # map sheet, series and area
+"""
+
+LEGAL_LAND_DESCRIPTION = re.compile(
+    rf"\b(?:{DOMINION_LAND_SURVEY}|{NATIONAL_TOPOGRAPHIC_SYSTEM})\b",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+LEGAL_LAND_NOTE = "Legal land description withheld from the provider"
+NO_ADDRESS_NOTE = "No address to geocode"
+
+
+def strip_legal_land_description(value: str) -> str:
+    """
+    Removes any Canadian legal land description from the given value.
+
+    Legal land descriptions locate an oil rig on a survey grid rather than on a
+    street, and no supported provider covers either grid: the prairie provinces
+    use the Dominion Land Survey (``01-17-040-06w4``) and British Columbia the
+    National Topographic System (``A-51-I/94-O-10``). Left in a query they are
+    misread as a street address and drag the match onto an unrelated road, so
+    the surrounding text is kept and the description itself is dropped.
+
+    Both grids are written inconsistently: a Dominion meridian may be lettered
+    (``06w4``), spelled out (``06-W4M``) or reduced to its number (``19-4``),
+    and a Topographic map sheet may be separated by a slash, a space, or nothing
+    at all.
+
+    A meridian reduced to a bare number or a bare letter is only recognized when
+    the quarter section or legal subdivision precedes it, because ``5-10-15-2``
+    on its own is indistinguishable from an ordinary hyphenated street address
+    such as a lot or box number. A meridian carrying both its letter and its
+    number is distinctive enough to stand alone.
+
+    Whatever is left is only kept when it still holds a letter, since the digits
+    stranded by a well identifier such as ``200 /D-050-E/094-H-05/ 00`` name
+    nothing a geocoder can find.
+
+    Parameters
+    ----------
+    value : str
+        The address or city text to clean.
+
+    Return
+    ----------
+    str
+        The value without its legal land description, or an empty string when
+        nothing locatable was left behind.
+    """
+    remainder = LEGAL_LAND_DESCRIPTION.sub(" ", value)
+    if remainder == value:
+        return value
+
+    remainder = " ".join(remainder.split()).strip(" ,-/")
+    return remainder if any(character.isalpha() for character in remainder) else ""
 
 
 @dataclass
@@ -39,9 +110,21 @@ class SourceRecord:
     longitude: str = ""
 
     def address_string(self) -> str:
-        """Joins the non-blank address components into a single query string."""
-        parts = [self.address, self.city, self.stateprov, self.postalcode, self.country]
+        """
+        Joins the non-blank address components into a single query string.
+
+        Any legal land description is stripped from the street and city first, so
+        a rig row is queried by the province it sits in rather than by a grid
+        reference no provider can resolve.
+        """
+        street = strip_legal_land_description(self.address)
+        city = strip_legal_land_description(self.city)
+        parts = [street, city, self.stateprov, self.postalcode, self.country]
         return ", ".join(part for part in parts if part)
+
+    def has_legal_land_description(self) -> bool:
+        """Reports whether the street or city holds a legal land description."""
+        return any(LEGAL_LAND_DESCRIPTION.search(part) for part in (self.address, self.city))
 
 
 @dataclass
@@ -125,6 +208,36 @@ def grade_accuracy(result: GeocodeResult, cap: Optional[int] = None) -> int:
     return AccuracyLevel.NONE
 
 
+def apply_legal_land_limit(record: SourceRecord, result: GeocodeResult) -> GeocodeResult:
+    """
+    Bounds a result at the precision its source row could ever support.
+
+    A row carrying a legal land description is queried with that description
+    stripped out, so the provider only ever saw the surrounding province and the
+    match it returned describes that province rather than the survey parcel. The
+    score is capped there and the result annotated, so a coincidentally
+    street-level answer is not mistaken for the rig's location.
+
+    Parameters
+    ----------
+    record : SourceRecord
+        The source row the result was produced for.
+    result : GeocodeResult
+        The result to bound, modified in place.
+
+    Return
+    ----------
+    GeocodeResult
+        The same result, capped and annotated when the row named a parcel.
+    """
+    if not record.has_legal_land_description():
+        return result
+
+    result.accuracy = min(result.accuracy, AccuracyLevel.STATE)
+    result.match_notes = "; ".join(note for note in (result.match_notes, LEGAL_LAND_NOTE) if note)
+    return result
+
+
 ROUTE_FIRST_COUNTRIES = {"MX"}
 
 
@@ -202,6 +315,11 @@ class Provider(ABC):
     @abstractmethod
     def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
         """Returns one GeocodeResult per input record, in the same order."""
+
+    @staticmethod
+    def unqueryable_result() -> GeocodeResult:
+        """Returns the no-match a record with nothing left to query resolves to."""
+        return GeocodeResult(match_notes=NO_ADDRESS_NOTE)
 
     def _request_with_retry(self, send: Callable[[], requests.Response]) -> requests.Response:
         """

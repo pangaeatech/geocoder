@@ -12,7 +12,7 @@ from typing import Dict, List
 
 import requests
 
-from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, format_street_address, grade_accuracy, register
+from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, apply_legal_land_limit, format_street_address, grade_accuracy, register
 
 
 @register("google")
@@ -36,6 +36,11 @@ class GoogleProvider(Provider):
     Street addresses are assembled from the response components in the
     convention of the country they belong to, since Mexican addresses order and
     punctuate their parts differently from North American ones.
+
+    Rows whose address or city holds a Canadian legal land description are
+    queried without it: Google reads such a grid reference as a street
+    address and matches it to an unrelated road, so only the surrounding
+    province is sent and the result is capped there.
     """
 
     requires_key = True
@@ -75,11 +80,15 @@ class GoogleProvider(Provider):
         List[GeocodeResult]
             One result per input record, aligned by position.
         """
-        return [self._geocode_one(record) for record in records]
+        return [apply_legal_land_limit(record, self._geocode_one(record)) for record in records]
 
     def _geocode_one(self, record: SourceRecord) -> GeocodeResult:
         """Queries one address and grades the parsed response by its location_type."""
-        payload = self._request(record.address_string())
+        query = record.address_string()
+        if not query:
+            return self.unqueryable_result()
+
+        payload = self._request(query)
         status = payload.get("status", "UNKNOWN")
 
         if status == "OK":
