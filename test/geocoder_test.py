@@ -16,8 +16,10 @@ import pytest
 from src import api
 from src import census
 from src import geocoder
+from src import postprocess
+from src import preprocess
 from src.api import GeocodeResult, Provider, SourceRecord
-from src.geocoder import detect_columns, main, process_workbook, write_output_sheet
+from src.geocoder import Options, detect_columns, main, process_workbook, write_output_sheet
 
 
 class MockProvider(Provider):
@@ -147,7 +149,7 @@ def test_debug_adds_raw_match_column(tmp_path):
         },
     )
 
-    process_workbook(str(infile), str(outfile), MockProvider(), debug=True)
+    process_workbook(str(infile), str(outfile), MockProvider(), options=Options(debug=True))
 
     sheet = openpyxl.load_workbook(outfile)["Sheet1"]
     header = [cell.value for cell in sheet[1]]
@@ -242,7 +244,7 @@ def test_country_per_sheet_fills_blank(tmp_path):
         },
     )
 
-    process_workbook(str(infile), str(outfile), MockProvider(), country_per_sheet=True)
+    process_workbook(str(infile), str(outfile), MockProvider(), options=Options(country_per_sheet=True))
 
     sheet = openpyxl.load_workbook(outfile)["Canada"]
     header = [cell.value for cell in sheet[1]]
@@ -292,11 +294,104 @@ def test_main_runs_registered_provider(tmp_path):
     assert outfile.exists()
 
 
+def test_preprocess_adds_flag_columns(tmp_path):
+    """--preProcess inserts PRE_ columns between the source and result columns."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(
+        infile,
+        {
+            "Sheet1": [
+                ["Address", "City", "State"],
+                ["PO Box 12", "Anytown", "CA"],
+            ],
+        },
+    )
+
+    process_workbook(str(infile), str(outfile), MockProvider(), options=Options(preprocess=True))
+
+    sheet = openpyxl.load_workbook(outfile)["Sheet1"]
+    header = [cell.value for cell in sheet[1]]
+    assert header == (geocoder.SOURCE_HEADERS + preprocess.PRE_HEADERS + geocoder.RESULT_HEADERS + geocoder.META_HEADERS)
+    values = dict(zip(header, [cell.value for cell in sheet[2]]))
+    assert "PO_BOX" in values["PRE_FLAGS"]
+    assert "PO Box" in values["PRE_NOTES"]
+
+
+def test_compare_adds_match_columns(tmp_path):
+    """--compare appends a graded MATCH_ column for each compared field."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(
+        infile,
+        {
+            "Sheet1": [
+                ["Address", "City", "State", "Lat", "Lng"],
+                ["1 Main St", "Anytown", "CA", "40.0", "-75.0"],
+            ],
+        },
+    )
+
+    process_workbook(str(infile), str(outfile), MockProvider(), options=Options(compare=True))
+
+    sheet = openpyxl.load_workbook(outfile)["Sheet1"]
+    header = [cell.value for cell in sheet[1]]
+    assert header[-len(postprocess.MATCH_HEADERS) :] == postprocess.MATCH_HEADERS
+    values = dict(zip(header, [cell.value for cell in sheet[2]]))
+    assert values["MATCH_ADDRESS"] == "EXACT"
+    assert values["MATCH_COUNTRY"] == "BLANK"
+    assert values["MATCH_DISTANCE_M"] == 0
+
+
+def test_api_none_writes_source_and_flags_only(tmp_path):
+    """--api none stops after pre-processing and writes no result columns."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["PO Box 12", "Anytown", "CA"]]})
+
+    main([str(infile), str(outfile), "--api", "none"])
+
+    sheet = openpyxl.load_workbook(outfile)["S"]
+    header = [cell.value for cell in sheet[1]]
+    assert header == geocoder.SOURCE_HEADERS + preprocess.PRE_HEADERS
+    assert "PO_BOX" in sheet[2][len(header) - 2].value
+
+
+def test_compare_with_api_none_rejected(tmp_path):
+    """--compare has nothing to compare against without a provider, so it exits."""
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+
+    with pytest.raises(SystemExit):
+        main([str(infile), str(tmp_path / "out.xlsx"), "--api", "none", "--compare"])
+
+
 def test_write_output_sheet_length_mismatch_raises():
     """A provider returning the wrong number of results is rejected."""
     records = [SourceRecord(internal_key=0, address="1 A St")]
     with pytest.raises(ValueError):
-        write_output_sheet(openpyxl.Workbook(), "S", records, [], "mock", False)
+        write_output_sheet(openpyxl.Workbook(), "S", records, [], [], "mock", Options())
+
+
+def test_write_output_sheet_flag_mismatch_raises():
+    """Pre-check flags that do not line up with the rows are rejected."""
+    records = [SourceRecord(internal_key=0, address="1 A St")]
+    with pytest.raises(ValueError):
+        write_output_sheet(openpyxl.Workbook(), "S", records, [], None, "none", Options(preprocess=True))
+
+
+def test_country_per_sheet_reports_no_missing_country(tmp_path, capsys):
+    """A country taken from the sheet name is not reported as a missing column."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(infile, {"Canada": [["Address", "City", "State"], ["1 A St", "Toronto", "ON"]]})
+
+    process_workbook(str(infile), str(outfile), MockProvider(), options=Options(preprocess=True, country_per_sheet=True))
+
+    assert "COUNTRY" not in capsys.readouterr().out
+    sheet = openpyxl.load_workbook(outfile)["Canada"]
+    header = [cell.value for cell in sheet[1]]
+    assert not dict(zip(header, [cell.value for cell in sheet[2]]))["PRE_FLAGS"]
 
 
 def test_main_runs_census_provider(tmp_path, monkeypatch):
