@@ -8,24 +8,12 @@ Geocoder Geocodio Provider Tests
 Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
+from test.helpers import FakeResponse, assert_white_house
+
 import pytest
 
 from src import geocodio
 from src.api import PROVIDERS, SourceRecord
-
-
-class _FakeResponse:
-    """Stands in for a requests.Response so provider tests avoid the network."""
-
-    def __init__(self, payload):
-        self._payload = payload
-
-    def raise_for_status(self):
-        """Mimics a successful response by never raising."""
-
-    def json(self):
-        """Returns the canned decoded payload."""
-        return self._payload
 
 
 def _candidate(accuracy_type, components, **overrides):
@@ -79,7 +67,7 @@ def _patch_response(monkeypatch, payload, captured=None):
     def fake_post(url, params=None, json=None, timeout=None):
         if captured is not None:
             captured.update(url=url, params=params, json=json, timeout=timeout)
-        return _FakeResponse(payload)
+        return FakeResponse(payload)
 
     monkeypatch.setattr(geocodio.requests, "post", fake_post)
 
@@ -107,13 +95,7 @@ def test_geocodio_parses_rooftop(monkeypatch):
     assert captured["json"] == [record.address_string()]
     assert result.match_type == "exact"
     assert result.location_type == "rooftop"
-    assert result.result_address == "1600 Pennsylvania Ave NW"
-    assert result.result_city == "Washington"
-    assert result.result_stateprov == "DC"
-    assert result.result_postalcode == "20500"
-    assert result.result_country == "US"
-    assert result.latitude == "38.898754"
-    assert result.longitude == "-77.03535"
+    assert_white_house(result)
     assert result.accuracy == 100
 
 
