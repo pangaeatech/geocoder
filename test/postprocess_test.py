@@ -11,7 +11,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 import pytest
 
 from src.api import GeocodeResult, SourceRecord
-from src.postprocess import FIELD_CODE_NAMES, compare_coordinates, compare_record, compare_values
+from src.postprocess import FIELD_CODE_NAMES, compare_coordinates, compare_record, compare_values, flag_result, summarize_grades
 
 
 @pytest.mark.parametrize(
@@ -31,6 +31,9 @@ from src.postprocess import FIELD_CODE_NAMES, compare_coordinates, compare_recor
         ("1 Main St", "1234 Main St", "PARTIAL"),
         ("100 Main St", "10 Main St", "PARTIAL"),
         ("123 Main St", "123 Main Ave", "PARTIAL"),
+        ("123 N 1st Ave", "123 North First Avenue", "ABBREVIATED"),
+        ("St Louis", "Stanley Louis", "PARTIAL"),
+        ("St Louis", "Saint Louis", "ABBREVIATED"),
         ("123 Main St", "987 Elm Boulevard", "DIFFERENT"),
         ("北京", "Beijing", "DIFFERENT"),
     ],
@@ -107,7 +110,63 @@ def test_compare_record_grades_every_field():
         longitude="-75.0",
     )
 
-    assert compare_record(record, result) == ["EXACT", "ABBREVIATED", "FORMATTING", "ABBREVIATED", "TRUNCATED", "MISSING", 0.0, 0.0, 0.0]
+    assert compare_record(record, result) == [
+        "EXACT",
+        "ABBREVIATED",
+        "FORMATTING",
+        "ABBREVIATED",
+        "TRUNCATED",
+        "MISSING",
+        "EXACT",
+        0.0,
+        0.0,
+        0.0,
+        "MISSING",
+        "COUNTRY_CHANGED",
+    ]
+
+
+@pytest.mark.parametrize(
+    "source,result,expected",
+    [
+        ("123 Main St", "123 Main Street", "EXACT"),
+        ("123 Main St", "125 Main St", "DIFFERENT"),
+        ("Av. Insurgentes Sur 1234", "Avenida Insurgentes Sur 1234", "EXACT"),
+        ("Main Street", "1 Main Street", "ADDED"),
+        ("123rd Ave", "123rd Avenue", "BLANK"),
+    ],
+)
+def test_street_number_graded_separately(source, result, expected):
+    """The house number is graded on its own, wherever the country puts it."""
+    record = SourceRecord(internal_key=0, address=source)
+    assert compare_record(record, GeocodeResult(result_address=result))[6] == expected
+
+
+def test_summarize_grades_reports_the_worst():
+    """A row is summarized by the grade that most needs a person to look at it."""
+    assert summarize_grades(["EXACT", "ABBREVIATED", "DIFFERENT", "BLANK"]) == "DIFFERENT"
+    assert summarize_grades(["BLANK", "BLANK"]) == "BLANK"
+
+
+def test_flag_result_reports_no_match_alone():
+    """A result with no coordinates is flagged as unmatched and nothing else."""
+    result = GeocodeResult(match_notes="no candidates")
+    assert flag_result(result, {"CITY": "DIFFERENT"}, "") == {"NO_MATCH": "no candidates"}
+
+
+def test_flag_result_names_the_rewritten_fields():
+    """A field the provider rewrote rather than reformatted is called out by name."""
+    result = GeocodeResult(latitude="40.0", longitude="-75.0", accuracy=100)
+    flags = flag_result(result, {"CITY": "FORMATTING", "STATEPROV": "DIFFERENT"}, 20.0)
+    assert flags == {"STATE_CHANGED": ""}
+
+
+def test_flag_result_reports_distant_and_coarse_results():
+    """A coarse result far from the source coordinates raises both flags."""
+    result = GeocodeResult(latitude="40.0", longitude="-75.0", accuracy=40)
+    flags = flag_result(result, {}, 4200.0)
+    assert flags["LOW_ACCURACY"] == "resolved no finer than city"
+    assert flags["FAR_FROM_SOURCE"] == "4.2 km from the source coordinates"
 
 
 def test_compare_record_expands_codes_per_field():

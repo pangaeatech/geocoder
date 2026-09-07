@@ -40,21 +40,23 @@ CANONICAL_FIELDS = [
 ]
 
 COLUMN_SYNONYMS = {
-    "ID": ["id", "facility id", "locationid", "location id"],
-    "NAME": ["name", "facility name"],
-    "ADDRESS": ["address", "street address"],
-    "CITY": ["city"],
+    "ID": ["id", "facility id", "locationid", "location id", "site id", "record id"],
+    "NAME": ["name", "facility name", "site name", "location name", "business name"],
+    "ADDRESS": ["address", "street address", "address 1", "address1", "addr", "street"],
+    "CITY": ["city", "town", "municipality"],
     "STATEPROV": [
         "state",
         "province",
         "state/province",
         "stateprovince",
         "state province",
+        "state/prov",
+        "prov",
     ],
-    "POSTALCODE": ["zipcode", "zip code", "postal code", "postalcode"],
-    "COUNTRY": ["country"],
+    "POSTALCODE": ["zipcode", "zip code", "postal code", "postalcode", "zip", "postcode", "postal"],
+    "COUNTRY": ["country", "country code"],
     "LATITUDE": ["lat", "latitude"],
-    "LONGITUDE": ["lng", "longitude"],
+    "LONGITUDE": ["lng", "longitude", "long", "lon"],
 }
 
 REQUIRED_FIELDS = ["ADDRESS", "CITY", "STATEPROV"]
@@ -262,6 +264,51 @@ def result_cells(result: GeocodeResult, api_name: str) -> List:
     return values + [api_name, result.match_type, result.accuracy, result.location_type, result.match_notes]
 
 
+def count_flags(counts: Dict[str, int], flags: List[Dict[str, str]]) -> None:
+    """Adds a sheet's flags to a running per-flag row count."""
+    for record_flags in flags:
+        for name in record_flags:
+            counts[name] = counts.get(name, 0) + 1
+
+
+def report_flags(counts: Dict[str, int]) -> None:
+    """
+    Prints how many rows carried each pre-check flag, commonest first.
+
+    The point of a pre-processing run is to learn what is wrong with a file, so
+    the answer is given on stdout rather than left to be counted by hand in the
+    workbook that was just written.
+
+    Parameters
+    ----------
+    counts : Dict[str, int]
+        Each flag raised anywhere in the run, mapped to the rows carrying it.
+    """
+    if not counts:
+        return
+
+    print("pre-check flags:")
+    for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+        print(f"  {count:>7}  {name}")
+
+
+def finish_sheet(worksheet) -> None:
+    """
+    Leaves a written sheet ready to triage: header frozen and filters armed.
+
+    The output is read by hand in Excel far more often than by a program, and
+    the columns this tool adds are there to be sorted and filtered on, so the
+    sheet is handed over with the header pinned and a filter on every column.
+
+    Parameters
+    ----------
+    worksheet
+        The finished worksheet, with its header and every data row appended.
+    """
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+
+
 def write_output_sheet(
     workbook: Workbook,
     sheet_name: str,
@@ -321,6 +368,8 @@ def write_output_sheet(
                 row.append(json.dumps(result.raw, ensure_ascii=False) if result.raw else "")
         worksheet.append(row)
 
+    finish_sheet(worksheet)
+
 
 def process_workbook(
     infile: str,
@@ -365,6 +414,7 @@ def process_workbook(
         output = Workbook()
         output.remove(output.active)
 
+        counts: Dict[str, int] = {}
         processed = 0
         for name in sheet_names:
             rows = source[name].iter_rows(values_only=True)
@@ -382,6 +432,7 @@ def process_workbook(
             results = provider.geocode(records) if provider else None
             api_name = provider.name if provider else NO_API
             write_output_sheet(output, name, records, flags, results, api_name, options)
+            count_flags(counts, flags)
             processed += 1
     finally:
         source.close()
@@ -389,6 +440,7 @@ def process_workbook(
     if processed == 0:
         raise SystemExit("error: no worksheets had the required columns; nothing written")
 
+    report_flags(counts)
     output.save(outfile)
 
 
@@ -478,7 +530,7 @@ def check_cells(record: SourceRecord, result: GeocodeResult, flags: Dict[str, st
     return cells + (compare_record(record, result) if options.compare else [])
 
 
-def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[List[str], List[List]]]:
+def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[List[str], List[List], List[Dict[str, str]]]]:
     """
     Rebuilds one worksheet of written output with its check columns refreshed.
 
@@ -496,9 +548,9 @@ def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[Lis
 
     Return
     ----------
-    sheet : Optional[Tuple[List[str], List[List]]]
-        The header and data rows to write, or None when the sheet holds no
-        output of this tool to check.
+    sheet : Optional[Tuple[List[str], List[List], List[Dict[str, str]]]]
+        The header, the data rows to write, and the pre-check flags behind
+        them, or None when the sheet holds no output of this tool to check.
     """
     header = [clean_cell(value) for value in next(rows, ())]
     source_map, result_map = detect_output_columns(header)
@@ -514,7 +566,7 @@ def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[Lis
 
     for index, (row, pair) in enumerate(zip(data, pairs)):
         place_cells(row, columns, check_cells(*pair, flags[index] if flags else {}, options))
-    return header, data
+    return header, data, flags
 
 
 def recheck_workbook(infile: str, outfile: str, worksheet: Optional[str] = None, options: Optional[Options] = None) -> None:
@@ -550,17 +602,20 @@ def recheck_workbook(infile: str, outfile: str, worksheet: Optional[str] = None,
         output = Workbook()
         output.remove(output.active)
 
+        counts: Dict[str, int] = {}
         processed = 0
         for name in [worksheet] if worksheet else source.sheetnames:
             sheet = recheck_sheet(source[name].iter_rows(values_only=True), name, options)
             if sheet is None:
                 continue
 
-            header, data = sheet
+            header, data, flags = sheet
             worksheet_out = output.create_sheet(title=name)
             worksheet_out.append(header)
             for row in data:
                 worksheet_out.append(row)
+            finish_sheet(worksheet_out)
+            count_flags(counts, flags)
             processed += 1
     finally:
         source.close()
@@ -568,6 +623,7 @@ def recheck_workbook(infile: str, outfile: str, worksheet: Optional[str] = None,
     if processed == 0:
         raise SystemExit("error: no worksheets held geocoder output; nothing written")
 
+    report_flags(counts)
     output.save(outfile)
 
 

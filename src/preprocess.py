@@ -12,7 +12,8 @@ import re
 from typing import Callable, Dict, List, Optional
 
 from .api import SourceRecord
-from .regions import COUNTRY_ALIASES
+from .regions import COUNTRY_NAMES, COUNTRY_SUBDIVISIONS, country_code, subdivision_code, within_country
+from .text import words
 
 PRE_HEADERS = ["PRE_FLAGS", "PRE_NOTES"]
 
@@ -46,7 +47,19 @@ ADDRESS_RANGE_RE = re.compile(r"^\d+\s*[-–]\s*\d+\s+\S")
 
 ADDRESS_DIGIT_RE = re.compile(r"\d")
 
-INVALID_CHARACTER_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\ufffd]|_x[0-9A-Fa-f]{4}_")
+INVALID_CHARACTER_RE = re.compile(r"[\x00-\x08\x0e-\x1f\x7f\ufffd]|_x[0-9A-Fa-f]{4}_")
+
+EMBEDDED_WHITESPACE_RE = re.compile(r"[\t\n\v\f\r]")
+
+MOJIBAKE_RE = re.compile("[\u00c3\u00c2\u00e2][\u0080-\u00ff\u2013-\u20ac]")
+
+FIELD_PATTERNS = [
+    ("INVALID_CHARACTERS", INVALID_CHARACTER_RE),
+    ("EMBEDDED_WHITESPACE", EMBEDDED_WHITESPACE_RE),
+    ("MOJIBAKE", MOJIBAKE_RE),
+]
+
+CARE_OF_RE = re.compile(r"\b(?:c\s*[/\\]\s*o|care\s+of|attn|attention|dba|d\s*/\s*b\s*/\s*a)\b", re.IGNORECASE)
 
 LEGAL_STRONG_PATTERNS = [
     re.compile(r"\b[ns][ew]\s*(?:1/4|¼|qtr|quarter)", re.IGNORECASE),
@@ -73,6 +86,10 @@ POSTALCODE_PATTERNS = {
     "MX": re.compile(r"^\d{5}$"),
 }
 
+LOCALITY_FIELDS = ["city", "stateprov", "postalcode"]
+
+MIN_REPEATED_LOCALITY = 2
+
 LOST_ZERO_COUNTRIES = {"US", "MX"}
 
 LOST_ZERO_RE = re.compile(r"^\d{3,4}$")
@@ -80,6 +97,7 @@ LOST_ZERO_RE = re.compile(r"^\d{3,4}$")
 ZIP_PLUS_FOUR_RE = re.compile(r"^(\d{5})(\d{4})$")
 
 DUPLICATE_FLAG = "DUPLICATE"
+SHARED_ADDRESS_FLAG = "SHARED_ADDRESS"
 NO_STREET_NUMBER_FLAG = "NO_STREET_NUMBER"
 
 UNUSABLE_ADDRESS_FLAGS = {"BLANK_ADDRESS", "PLACEHOLDER"}
@@ -96,7 +114,7 @@ STREET_NUMBER_EXEMPT_FLAGS = {
 
 def _check_placeholder(record: SourceRecord) -> Dict[str, str]:
     """Flags an address whose text is a stand-in rather than a real location."""
-    normalized = re.sub(r"[^0-9a-z]+", " ", record.address.casefold()).strip()
+    normalized = " ".join(words(record.address))
     if normalized and normalized in PLACEHOLDER_VALUES:
         return {"PLACEHOLDER": record.address}
     return {}
@@ -164,18 +182,69 @@ def _check_street_number(record: SourceRecord) -> Dict[str, str]:
     return {}
 
 
-def _check_invalid_characters(record: SourceRecord) -> Dict[str, str]:
-    """
-    Flags replacement or control characters left behind by a bad encoding.
+def _check_care_of(record: SourceRecord) -> Dict[str, str]:
+    """Flags a routing instruction the provider will read as part of the street."""
+    match = CARE_OF_RE.search(record.address)
+    return {"CARE_OF": match.group(0)} if match else {}
 
-    A worksheet cannot hold a raw control character, since the XML it is stored
-    as forbids one, so Excel writes it as the literal escape ``_x000b_``; both
-    that escape and a character that survived intact are reported.
+
+def _contains(haystack: List[str], needle: List[str]) -> bool:
+    """Reports whether one word list appears whole and in order inside another."""
+    return bool(needle) and any(haystack[start : start + len(needle)] == needle for start in range(len(haystack) - len(needle) + 1))
+
+
+def _check_redundant_address(record: SourceRecord) -> Dict[str, str]:
     """
-    for field_name in BLANK_CHECKED_FIELDS:
-        if INVALID_CHARACTER_RE.search(getattr(record, field_name)):
-            return {"INVALID_CHARACTERS": field_name}
+    Flags an address that repeats the city, state, or postal code columns.
+
+    One repeated field proves nothing, since a street may be named after the
+    town it leads to; two mean the address was pasted whole from a single-column
+    source and will reach the provider with its tail said twice.
+    """
+    address = words(record.address)
+    repeated = [name for name in LOCALITY_FIELDS if _contains(address, words(getattr(record, name)))]
+    if len(repeated) < MIN_REPEATED_LOCALITY:
+        return {}
+    return {"REDUNDANT_ADDRESS": f"address repeats {', '.join(repeated)}"}
+
+
+def _check_field_text(record: SourceRecord) -> Dict[str, str]:
+    """
+    Flags the text damage a bad export leaves in the address-forming fields.
+
+    Each kind is reported once, naming the first field it appears in. A
+    worksheet cannot hold a raw control character, since the XML it is stored as
+    forbids one, so Excel writes it as the literal escape ``_x000b_``; both that
+    escape and a character that survived intact are reported. A line break or a
+    tab is legal in a cell but reaches the provider inside the value, and the
+    doubled accents a UTF-8 file re-read as Latin-1 leaves behind corrupt it.
+    """
+    flags = {}
+    for flag, pattern in FIELD_PATTERNS:
+        field_name = next((name for name in BLANK_CHECKED_FIELDS if pattern.search(getattr(record, name))), None)
+        if field_name:
+            flags[flag] = field_name
+    return flags
+
+
+def _check_country(record: SourceRecord) -> Dict[str, str]:
+    """Flags a country outside the set this tool's providers can geocode."""
+    if record.country and not country_code(record.country):
+        return {"UNSUPPORTED_COUNTRY": f"{record.country} is not one of {', '.join(COUNTRY_NAMES.values())}"}
     return {}
+
+
+def _check_stateprov(record: SourceRecord) -> Dict[str, str]:
+    """
+    Flags a state or province the row's country does not have.
+
+    Only a country with a subdivision table is checked, so a Mexican state and
+    a country outside this tool's reach both pass without comment.
+    """
+    country = country_code(record.country)
+    if not record.stateprov or country not in COUNTRY_SUBDIVISIONS or subdivision_code(country, record.stateprov):
+        return {}
+    return {"INVALID_STATEPROV": f"{record.stateprov} is not a {COUNTRY_NAMES[country]} state or province"}
 
 
 def _check_postalcode(record: SourceRecord) -> Dict[str, str]:
@@ -188,7 +257,7 @@ def _check_postalcode(record: SourceRecord) -> Dict[str, str]:
     leading zeros eaten by a spreadsheet storing the column as numbers, and a
     nine-digit U.S. code is a ZIP+4 that lost its hyphen.
     """
-    country = COUNTRY_ALIASES.get(record.country.casefold().strip("."))
+    country = country_code(record.country)
     pattern = POSTALCODE_PATTERNS.get(country)
     if not record.postalcode or not pattern or pattern.match(record.postalcode):
         return {}
@@ -202,8 +271,21 @@ def _check_postalcode(record: SourceRecord) -> Dict[str, str]:
     return {"INVALID_POSTALCODE": f"{record.postalcode} is not a {country} postal code"}
 
 
+def _coordinate_problem(latitude: float, longitude: float) -> str:
+    """Names what is wrong with a parsed coordinate pair, or a blank when nothing is."""
+    if abs(latitude) > 90 or abs(longitude) > 180:
+        return f"{latitude}, {longitude} is outside the globe"
+    return "null island" if latitude == 0 and longitude == 0 else ""
+
+
 def _check_coordinates(record: SourceRecord) -> Dict[str, str]:
-    """Flags source coordinates that are incomplete, unparseable, or off-globe."""
+    """
+    Flags source coordinates that are incomplete, unparseable, or in the wrong place.
+
+    A pair that is a valid point on the globe is measured once more against the
+    extent of the country the row claims, which is what catches a latitude and
+    longitude entered the wrong way round or with a sign dropped.
+    """
     if not record.latitude and not record.longitude:
         return {}
     if not record.latitude or not record.longitude:
@@ -215,10 +297,13 @@ def _check_coordinates(record: SourceRecord) -> Dict[str, str]:
     except ValueError:
         return {"INVALID_COORDINATES": f"{record.latitude}, {record.longitude} are not numeric"}
 
-    if abs(latitude) > 90 or abs(longitude) > 180:
-        return {"INVALID_COORDINATES": f"{latitude}, {longitude} is outside the globe"}
-    if latitude == 0 and longitude == 0:
-        return {"INVALID_COORDINATES": "null island"}
+    problem = _coordinate_problem(latitude, longitude)
+    if problem:
+        return {"INVALID_COORDINATES": problem}
+
+    country = country_code(record.country)
+    if not within_country(country, latitude, longitude):
+        return {"COORDINATES_OUTSIDE_COUNTRY": f"{latitude}, {longitude} is not in {COUNTRY_NAMES[country]}"}
     return {}
 
 
@@ -230,7 +315,11 @@ CHECKS: List[Callable[[SourceRecord], Dict[str, str]]] = [
     _check_legal_description,
     _check_address_range,
     _check_street_number,
-    _check_invalid_characters,
+    _check_care_of,
+    _check_redundant_address,
+    _check_field_text,
+    _check_country,
+    _check_stateprov,
     _check_postalcode,
     _check_coordinates,
 ]
@@ -269,18 +358,28 @@ def check_record(record: SourceRecord, blank_fields: Optional[List[str]] = None)
     return flags
 
 
-def _duplicate_key(record: SourceRecord) -> str:
-    """Builds the normalized address key two rows must share to be duplicates."""
-    parts = [record.address, record.city, record.stateprov, record.postalcode, record.country]
-    return re.sub(r"[^0-9a-z]+", " ", " ".join(parts).casefold()).strip()
+def _address_key(record: SourceRecord) -> str:
+    """Builds the normalized address key two rows must share to sit together."""
+    return " ".join(words(" ".join([record.address, record.city, record.stateprov, record.postalcode, record.country])))
+
+
+def _count_keys(keys: List[str]) -> Dict[str, int]:
+    """Counts how many rows carry each non-blank key."""
+    counts: Dict[str, int] = {}
+    for value in filter(None, keys):
+        counts[value] = counts.get(value, 0) + 1
+    return counts
 
 
 def check_records(records: List[SourceRecord], blank_fields: Optional[List[str]] = None) -> List[Dict[str, str]]:
     """
     Checks every record in a worksheet and adds the checks that span rows.
 
-    A row whose address is blank or a placeholder is left out of the duplicate
-    count: it has nothing to be a duplicate of, and its own flags already say so.
+    Two rows at one address are only a duplicate when they are also the same
+    place: several tenants of one building legitimately share an address, and
+    that is worth knowing without being called a repeated row. A row whose
+    address is blank or a placeholder is counted as neither: it has nothing to
+    be a duplicate of, and its own flags already say so.
 
     Parameters
     ----------
@@ -296,16 +395,21 @@ def check_records(records: List[SourceRecord], blank_fields: Optional[List[str]]
         One flag mapping per record, aligned with records.
     """
     flags = [check_record(record, blank_fields) for record in records]
-    keys = ["" if record_flags.keys() & UNUSABLE_ADDRESS_FLAGS else _duplicate_key(record) for record, record_flags in zip(records, flags)]
+    usable = [not record_flags.keys() & UNUSABLE_ADDRESS_FLAGS for record_flags in flags]
+    addresses = [_address_key(record) if keep else "" for record, keep in zip(records, usable)]
+    names = [" ".join(words(record.name)) for record in records]
+    rows = [f"{name}|{address}" if address else "" for name, address in zip(names, addresses)]
 
-    counts: Dict[str, int] = {}
-    for key in filter(None, keys):
-        counts[key] = counts.get(key, 0) + 1
+    address_counts = _count_keys(addresses)
+    row_counts = _count_keys(rows)
 
-    for key, record_flags in zip(keys, flags):
-        others = counts.get(key, 0) - 1
-        if others > 0:
-            record_flags[DUPLICATE_FLAG] = f"address is shared with {others} other row(s)"
+    for address, row, record_flags in zip(addresses, rows, flags):
+        repeats = row_counts.get(row, 0) - 1
+        shared = address_counts.get(address, 0) - 1
+        if repeats > 0:
+            record_flags[DUPLICATE_FLAG] = f"name and address repeat on {repeats} other row(s)"
+        elif shared > 0:
+            record_flags[SHARED_ADDRESS_FLAG] = f"address is shared with {shared} other row(s)"
     return flags
 
 

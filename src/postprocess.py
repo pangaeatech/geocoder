@@ -10,74 +10,117 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 
 import math
 import re
-import unicodedata
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-from .api import GeocodeResult, SourceRecord
+from .api import AccuracyLevel, GeocodeResult, SourceRecord
 from .regions import COUNTRY_CODE_NAMES, SUBDIVISION_NAMES
+from .text import words
 
 COMPARE_FIELDS = ["NAME", "ADDRESS", "CITY", "STATEPROV", "POSTALCODE", "COUNTRY"]
 
+STREET_NUMBER_HEADER = "MATCH_STREET_NUMBER"
+
 DISTANCE_HEADERS = ["MATCH_LATITUDE_M", "MATCH_LONGITUDE_M", "MATCH_DISTANCE_M"]
 
-MATCH_HEADERS = [f"MATCH_{field_name}" for field_name in COMPARE_FIELDS] + DISTANCE_HEADERS
+SUMMARY_HEADERS = ["MATCH_SUMMARY", "POST_FLAGS"]
+
+MATCH_HEADERS = [f"MATCH_{field_name}" for field_name in COMPARE_FIELDS] + [STREET_NUMBER_HEADER] + DISTANCE_HEADERS + SUMMARY_HEADERS
 
 EARTH_RADIUS_M = 6371008.8
 
 MAX_ABBREVIATION_LENGTH = 4
 
+FAR_DISTANCE_M = 1000
+
+LOW_ACCURACY = AccuracyLevel.STREET
+
 FIELD_CODE_NAMES = {"STATEPROV": SUBDIVISION_NAMES, "COUNTRY": COUNTRY_CODE_NAMES}
 
+GRADE_SEVERITY = {
+    "BLANK": 0,
+    "EXACT": 1,
+    "FORMATTING": 2,
+    "ABBREVIATED": 3,
+    "TRUNCATED": 4,
+    "ADDED": 5,
+    "MISSING": 6,
+    "EXTRA": 7,
+    "PARTIAL": 8,
+    "DIFFERENT": 9,
+}
+
+CHANGED_GRADES = {"PARTIAL", "MISSING", "DIFFERENT"}
+
+CHANGE_FLAGS = {"CITY": "CITY_CHANGED", "STATEPROV": "STATE_CHANGED", "POSTALCODE": "POSTALCODE_CHANGED", "COUNTRY": "COUNTRY_CHANGED"}
+
+STREET_NUMBER_RES = [re.compile(r"^\s*(\d+[a-z]?)\b", re.IGNORECASE), re.compile(r"\b(\d+[a-z]?)\s*$", re.IGNORECASE)]
+
 ABBREVIATIONS = {
-    "apt": "apartment",
-    "av": "avenue",
-    "ave": "avenue",
-    "bldg": "building",
-    "blvd": "boulevard",
-    "cir": "circle",
-    "ct": "court",
-    "dr": "drive",
-    "e": "east",
-    "fl": "floor",
-    "ft": "fort",
-    "hts": "heights",
-    "hwy": "highway",
-    "ln": "lane",
-    "mt": "mount",
-    "n": "north",
-    "ne": "northeast",
-    "nw": "northwest",
-    "pkwy": "parkway",
-    "rd": "road",
-    "rm": "room",
-    "s": "south",
-    "se": "southeast",
-    "sq": "square",
-    "st": "street",
-    "ste": "suite",
-    "sw": "southwest",
-    "trl": "trail",
-    "w": "west",
+    "apt": ("apartment",),
+    "av": ("avenue", "avenida"),
+    "ave": ("avenue", "avenida"),
+    "bldg": ("building",),
+    "blvd": ("boulevard", "bulevar"),
+    "cir": ("circle",),
+    "col": ("colonia",),
+    "ct": ("court",),
+    "dr": ("drive",),
+    "e": ("east",),
+    "fl": ("floor",),
+    "ft": ("fort",),
+    "hts": ("heights",),
+    "hwy": ("highway",),
+    "ln": ("lane",),
+    "mt": ("mount",),
+    "n": ("north",),
+    "ne": ("northeast",),
+    "nw": ("northwest",),
+    "pkwy": ("parkway",),
+    "rd": ("road",),
+    "rm": ("room",),
+    "s": ("south",),
+    "se": ("southeast",),
+    "sq": ("square",),
+    "st": ("street", "saint"),
+    "ste": ("suite",),
+    "sw": ("southwest",),
+    "trl": ("trail",),
+    "w": ("west",),
+    "1st": ("first",),
+    "2nd": ("second",),
+    "3rd": ("third",),
+    "4th": ("fourth",),
+    "5th": ("fifth",),
+    "6th": ("sixth",),
+    "7th": ("seventh",),
+    "8th": ("eighth",),
+    "9th": ("ninth",),
+    "10th": ("tenth",),
+    "11th": ("eleventh",),
+    "12th": ("twelfth",),
 }
 
 
-def _tokenize(value: str) -> List[str]:
-    """Folds a value to accent-free lowercase words, dropping punctuation."""
-    decomposed = unicodedata.normalize("NFKD", value.casefold())
-    unaccented = "".join(character for character in decomposed if not unicodedata.combining(character))
-    return re.sub(r"[^0-9a-z]+", " ", unaccented).split()
+def _expansions(token: str) -> Set[str]:
+    """Returns a word together with every word it is a known shorthand for."""
+    return {token, *ABBREVIATIONS.get(token, ())}
 
 
 def _tokens_match(left: str, right: str) -> bool:
     """
     Reports whether two words are the same word, one of them abbreviated.
 
+    A word the table knows means what the table says it means, so "St" is a
+    street or a saint but never Stanley; only a word with no listed expansion
+    falls back to matching by prefix, which is how Mexican states abbreviate.
     Numbers never abbreviate one another: a street number is the part of an
     address a comparison most needs to hold to the letter, so 1 and 1234 are
     different addresses rather than a shortened spelling of one.
     """
-    if ABBREVIATIONS.get(left, left) == ABBREVIATIONS.get(right, right):
+    if _expansions(left) & _expansions(right):
         return True
+    if left in ABBREVIATIONS or right in ABBREVIATIONS:
+        return False
 
     short, long = sorted([left, right], key=len)
     return not short.isdigit() and len(short) <= MAX_ABBREVIATION_LENGTH and long.startswith(short)
@@ -101,7 +144,7 @@ def _overlaps(left: List[str], right: List[str]) -> bool:
 def _expand_code(tokens: List[str], code_names: Optional[Dict[str, str]]) -> List[str]:
     """Replaces a known region code with the words of the name it stands for."""
     name = code_names.get(tokens[0].upper()) if code_names and len(tokens) == 1 else None
-    return _tokenize(name) if name else tokens
+    return words(name) if name else tokens
 
 
 def _compare_tokens(source_tokens: List[str], result_tokens: List[str]) -> str:
@@ -157,8 +200,8 @@ def compare_values(source: str, result: str, code_names: Optional[Dict[str, str]
     if source == result:
         return "EXACT"
 
-    source_tokens = _tokenize(source)
-    result_tokens = _tokenize(result)
+    source_tokens = words(source)
+    result_tokens = words(result)
     if source_tokens != result_tokens and _expand_code(source_tokens, code_names) == _expand_code(result_tokens, code_names):
         return "ABBREVIATED"
     return _compare_tokens(source_tokens, result_tokens)
@@ -214,6 +257,91 @@ def compare_coordinates(record: SourceRecord, result: GeocodeResult) -> List:
     return [round(northing, 1), round(easting, 1), round(distance, 1)]
 
 
+def _street_number(address: str) -> str:
+    """
+    Pulls the house number off an address, wherever the country puts it.
+
+    A leading number wins over a trailing one, so a United States or Canadian
+    address is read correctly and a Mexican one falls back to the number its
+    convention trails with. Both sides of a comparison are read the same way, so
+    a Mexican address whose street name itself opens with a number still grades
+    against the like part of the result.
+
+    Parameters
+    ----------
+    address : str
+        The address to read the number from.
+
+    Return
+    ----------
+    str
+        The house number, or a blank when the address carries none.
+    """
+    for pattern in STREET_NUMBER_RES:
+        match = pattern.search(address)
+        if match:
+            return match[1]
+    return ""
+
+
+def summarize_grades(grades: List[str]) -> str:
+    """
+    Reduces one row's grades to the worst of them, for sorting and filtering.
+
+    A field the provider answered differently outranks one it did not answer at
+    all, since most providers return no name and a row would otherwise summarize
+    as MISSING however well its address matched. Severity follows GRADE_SEVERITY.
+
+    Parameters
+    ----------
+    grades : List[str]
+        Every grade the row was given.
+
+    Return
+    ----------
+    str
+        The grade that most needs a human to look at it, or BLANK for a row
+        with nothing to compare.
+    """
+    return max(grades, key=lambda grade: GRADE_SEVERITY.get(grade, 0), default="BLANK")
+
+
+def flag_result(result: GeocodeResult, grades: Dict[str, str], distance) -> Dict[str, str]:
+    """
+    Flags the results whose own metadata says they are worth a second look.
+
+    A field the provider rewrote rather than merely reformatted is called out by
+    name, because a changed city, state, country, or postal code almost always
+    means the query landed somewhere else entirely rather than that the source
+    was untidy. The coordinate flag fires only when the source had coordinates
+    of its own to disagree with.
+
+    Parameters
+    ----------
+    result : GeocodeResult
+        The geocoded result for one row.
+    grades : Dict[str, str]
+        Each compared field name mapped to the grade it was given.
+    distance
+        The great-circle distance from the source coordinates, or a blank.
+
+    Return
+    ----------
+    flags : Dict[str, str]
+        Each flag raised, mapped to an explanatory note or a blank string.
+    """
+    if not result.latitude and not result.longitude:
+        return {"NO_MATCH": result.match_notes}
+
+    flags = {}
+    if result.accuracy and result.accuracy < LOW_ACCURACY:
+        flags["LOW_ACCURACY"] = f"resolved no finer than {AccuracyLevel(result.accuracy).name.lower()}"
+    flags.update({flag: "" for field_name, flag in CHANGE_FLAGS.items() if grades.get(field_name) in CHANGED_GRADES})
+    if distance != "" and distance > FAR_DISTANCE_M:
+        flags["FAR_FROM_SOURCE"] = f"{round(distance / 1000, 1)} km from the source coordinates"
+    return flags
+
+
 def compare_record(record: SourceRecord, result: GeocodeResult) -> List:
     """
     Builds the MATCH_ cells comparing one source row against its result.
@@ -228,10 +356,15 @@ def compare_record(record: SourceRecord, result: GeocodeResult) -> List:
     Return
     ----------
     List
-        One grade per compared field, followed by the coordinate offsets.
+        One grade per compared field, the house-number grade, the coordinate
+        offsets, the worst grade of the row, and the flags the result raised.
     """
-    grades = [
-        compare_values(getattr(record, name.lower()), getattr(result, f"result_{name.lower()}"), FIELD_CODE_NAMES.get(name))
+    grades = {
+        name: compare_values(getattr(record, name.lower()), getattr(result, f"result_{name.lower()}"), FIELD_CODE_NAMES.get(name))
         for name in COMPARE_FIELDS
-    ]
-    return grades + compare_coordinates(record, result)
+    }
+    grades[STREET_NUMBER_HEADER] = compare_values(_street_number(record.address), _street_number(result.result_address))
+
+    offsets = compare_coordinates(record, result)
+    flags = flag_result(result, grades, offsets[-1])
+    return list(grades.values()) + offsets + [summarize_grades(list(grades.values())), ", ".join(flags)]

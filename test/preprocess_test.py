@@ -173,18 +173,30 @@ def test_source_coordinates_validated(latitude, longitude, expected):
     assert ("INVALID_COORDINATES" in flags) is expected
 
 
-def test_duplicate_addresses_flagged_across_rows():
-    """Rows sharing a normalized address are flagged with the number of siblings."""
+def test_duplicate_rows_flagged_across_rows():
+    """Rows repeating both name and address are flagged with the number of siblings."""
     records = [
-        SourceRecord(internal_key=0, address="1 Main St", city="Anytown", stateprov="CA"),
-        SourceRecord(internal_key=1, address="1 MAIN ST.", city="anytown", stateprov="ca"),
-        SourceRecord(internal_key=2, address="2 Other St", city="Anytown", stateprov="CA"),
+        SourceRecord(internal_key=0, name="Site", address="1 Main St", city="Anytown", stateprov="CA"),
+        SourceRecord(internal_key=1, name="site", address="1 MAIN ST.", city="anytown", stateprov="ca"),
+        SourceRecord(internal_key=2, name="Site", address="2 Other St", city="Anytown", stateprov="CA"),
     ]
 
     flags = check_records(records)
-    assert flags[0]["DUPLICATE"] == "address is shared with 1 other row(s)"
+    assert flags[0]["DUPLICATE"] == "name and address repeat on 1 other row(s)"
     assert "DUPLICATE" in flags[1]
     assert "DUPLICATE" not in flags[2]
+
+
+def test_tenants_of_one_building_share_rather_than_duplicate():
+    """Two names at one address share it; neither is a repeated row."""
+    records = [
+        SourceRecord(internal_key=0, name="Clinic", address="1 Main St", city="Anytown", stateprov="CA"),
+        SourceRecord(internal_key=1, name="Pharmacy", address="1 Main St", city="Anytown", stateprov="CA"),
+    ]
+
+    flags = check_records(records)
+    assert flags[0]["SHARED_ADDRESS"] == "address is shared with 1 other row(s)"
+    assert "DUPLICATE" not in flags[0]
 
 
 @pytest.mark.parametrize("address", ["", "N/A"])
@@ -194,6 +206,71 @@ def test_rows_without_an_address_are_not_duplicates(address):
 
     for record_flags in check_records(records, ["address"]):
         assert "DUPLICATE" not in record_flags
+
+
+@pytest.mark.parametrize("address", ["C/O John Smith, 5 Elm St", "ATTN: Bob, 5 Elm St", "5 Elm St d/b/a The Diner"])
+def test_care_of_flagged(address):
+    """A routing instruction the provider would read as street text is flagged."""
+    assert "CARE_OF" in check_record(_record(address=address))
+
+
+def test_redundant_address_flagged():
+    """An address that repeats two of its own locality columns is flagged."""
+    record = _record(address="1 Main St, Anytown, CA 90210")
+    assert check_record(record)["REDUNDANT_ADDRESS"] == "address repeats city, stateprov, postalcode"
+
+
+def test_street_named_after_its_town_not_redundant():
+    """One repeated locality field is not enough to call an address redundant."""
+    assert "REDUNDANT_ADDRESS" not in check_record(_record(address="1 Anytown Rd"))
+
+
+def test_embedded_whitespace_flagged():
+    """A line break inside a cell is flagged with the field that carries it."""
+    assert check_record(_record(address="5 Elm St\nSuite 2"))["EMBEDDED_WHITESPACE"] == "address"
+
+
+def test_mojibake_flagged():
+    """A UTF-8 value re-read as Latin-1 is flagged with the field that holds it."""
+    assert check_record(_record(city="Montr\u00c3\u00a9al"))["MOJIBAKE"] == "city"
+
+
+@pytest.mark.parametrize(
+    "country,expected",
+    [("US", False), ("Canada", False), ("M\u00e9xico", False), ("France", True), ("", False)],
+)
+def test_unsupported_country_flagged(country, expected):
+    """A country outside the set the providers cover is flagged, a blank is not."""
+    assert ("UNSUPPORTED_COUNTRY" in check_record(_record(country=country))) is expected
+
+
+@pytest.mark.parametrize(
+    "stateprov,country,expected",
+    [
+        ("CA", "US", False),
+        ("California", "US", False),
+        ("D.C.", "US", False),
+        ("QC", "Canada", False),
+        ("Qu\u00e9bec", "Canada", False),
+        ("CA", "Canada", True),
+        ("Jalisco", "MX", False),
+        ("XX", "France", False),
+    ],
+)
+def test_stateprov_checked_against_its_country(stateprov, country, expected):
+    """A state is checked only against a country whose subdivisions are known."""
+    assert ("INVALID_STATEPROV" in check_record(_record(stateprov=stateprov, country=country))) is expected
+
+
+def test_coordinates_outside_their_country_flagged():
+    """Coordinates that fall outside the row's country are reported with it."""
+    flags = check_record(_record(latitude="19.4", longitude="-99.1", country="US"))
+    assert flags["COORDINATES_OUTSIDE_COUNTRY"] == "19.4, -99.1 is not in United States"
+
+
+def test_coordinates_inside_their_country_not_flagged():
+    """A coordinate pair within the country's extent passes unremarked."""
+    assert not check_record(_record(latitude="34.1", longitude="-118.4"))
 
 
 def test_format_flags_renders_names_and_notes():

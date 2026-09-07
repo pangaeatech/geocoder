@@ -97,6 +97,15 @@ def test_detect_columns_synonyms_case_insensitive():
     }
 
 
+@pytest.mark.parametrize(
+    "label,field",
+    [("Zip", "POSTALCODE"), ("Postcode", "POSTALCODE"), ("Long", "LONGITUDE"), ("Town", "CITY"), ("Street", "ADDRESS")],
+)
+def test_detect_columns_common_shorthand(label, field):
+    """The short header labels a spreadsheet usually carries are recognized."""
+    assert detect_columns([label]) == {field: 0}
+
+
 def test_detect_columns_first_match_wins():
     """When several columns match one field, the first column wins."""
     mapping = detect_columns(["address", "street address"])
@@ -488,3 +497,37 @@ def test_main_runs_census_provider(tmp_path, monkeypatch):
     assert values["RESULT_LATITUDE"] == "34.0"
     assert values["RESULT_LONGITUDE"] == "-118.0"
     assert values["MATCH_TYPE"] == "exact"
+
+
+def test_output_sheet_is_left_ready_to_triage(tmp_path):
+    """The written sheet arrives with its header frozen and a filter over its cells."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(infile, {"Sheet1": [["Address", "City", "State"], ["PO Box 12", "Anytown", "CA"]]})
+
+    main([str(infile), str(outfile), "--api", "none"])
+
+    sheet = openpyxl.load_workbook(outfile)["Sheet1"]
+    assert sheet.freeze_panes == "A2"
+    assert sheet.auto_filter.ref == sheet.dimensions
+
+
+def test_preprocess_run_reports_its_flag_counts(tmp_path, capsys):
+    """A pre-processing run says on stdout how many rows carried each flag."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(
+        infile,
+        {
+            "Sheet1": [
+                ["Address", "City", "State"],
+                ["PO Box 12", "Anytown", "CA"],
+                ["PO Box 99", "Anytown", "CA"],
+                ["1 Main St", "Anytown", "CA"],
+            ],
+        },
+    )
+
+    main([str(infile), str(outfile), "--api", "none"])
+
+    assert "      2  PO_BOX" in capsys.readouterr().out
