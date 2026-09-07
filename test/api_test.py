@@ -11,7 +11,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 import pytest
 
 from src import api
-from src.api import GeocodeResult, Provider, grade_accuracy, register, resolve_api_key
+from src.api import GeocodeResult, Provider, format_street_address, grade_accuracy, register, resolve_api_key
 
 
 def test_register_adds_to_registry():
@@ -65,6 +65,30 @@ def test_grade_accuracy_cap_limits_top_tier():
     """A provider cap lowers the top tier but leaves coarser tiers untouched."""
     assert grade_accuracy(GeocodeResult(result_address="1 Main St"), cap=90) == 90
     assert grade_accuracy(GeocodeResult(result_postalcode="90210"), cap=90) == 50
+
+
+def test_format_street_address_leads_with_the_number():
+    """Countries outside ROUTE_FIRST_COUNTRIES put the house number before the street."""
+    assert format_street_address("US", "Pennsylvania Ave NW", "1600") == "1600 Pennsylvania Ave NW"
+    assert format_street_address("CA", "Stornoway Dr", "42") == "42 Stornoway Dr"
+
+
+def test_format_street_address_trails_the_number_in_mexico():
+    """A Mexican street line carries the number after the street, with the sublocality appended."""
+    assert format_street_address("MX", "C. 49", "76", sublocality="Santa Margarita") == "C. 49 76, Santa Margarita"
+    assert format_street_address("MX", "Gral. Pedro Hinojosa", "7", "17", "Cd Industrial") == "Gral. Pedro Hinojosa 7-17, Cd Industrial"
+
+
+def test_format_street_address_without_a_number_keeps_the_street():
+    """A street with no house number still yields an address in either convention."""
+    assert format_street_address("US", "Pennsylvania Ave NW") == "Pennsylvania Ave NW"
+    assert format_street_address("MX", "C. 49", sublocality="Santa Margarita") == "C. 49, Santa Margarita"
+
+
+def test_format_street_address_without_a_street_is_blank():
+    """A match with no street has no address to report, whatever else it carries."""
+    assert format_street_address("US", "", "1600") == ""
+    assert format_street_address("MX", "", "76", "17", "Santa Margarita") == ""
 
 
 class _FakeResponse:

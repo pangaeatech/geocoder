@@ -12,7 +12,7 @@ from typing import Dict, List
 
 import requests
 
-from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, grade_accuracy, register
+from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, format_street_address, grade_accuracy, register
 
 
 @register("geocodio")
@@ -34,9 +34,10 @@ class GeocodioProvider(Provider):
     precision it actually represents, and a match resolved to a street with no
     house number is capped lower still.
 
-    Street addresses are read from the response's own ``address_lines`` rather
-    than assembled here, since Geocodio already writes that line in the
-    convention of the country the match belongs to.
+    Street addresses are assembled from the response components in the
+    convention of the country they belong to. Geocodio's own ``address_lines``
+    are not used: it writes that line house number first for every country,
+    which is the wrong order for Mexican addresses.
     """
 
     requires_key = True
@@ -139,7 +140,7 @@ class GeocodioProvider(Provider):
         accuracy_type = match.get("accuracy_type", "")
 
         return GeocodeResult(
-            result_address=self._street_address(match, components),
+            result_address=self._street_address(components),
             result_city=components.get("city", ""),
             result_stateprov=components.get("state", ""),
             result_postalcode=components.get("zip", ""),
@@ -152,27 +153,16 @@ class GeocodioProvider(Provider):
         )
 
     @staticmethod
-    def _street_address(match: Dict, components: Dict[str, str]) -> str:
+    def _street_address(components: Dict[str, str]) -> str:
         """
-        Returns the street line of a match in the convention of its own country.
+        Assembles the street address from the response components in the convention of the match's country.
 
-        Geocodio composes ``address_lines`` per country, trailing the house
-        number after the street for Mexican addresses and leading with it for
-        North American ones, so its first line is preferred over joining the
-        parts here in one fixed order. A response without that line falls back
-        to the North American order.
-
-        A street with no house number still yields an address, since the street
-        name alone locates the row to that street; _accuracy_cap grades such a
-        result no higher than street level.
+        Geocodio reports no sublocality of its own, so a Mexican address carries
+        only the street, house number and any subpremise.
         """
-        lines = match.get("address_lines", [])
-        if lines and lines[0]:
-            return lines[0]
-
-        street = components.get("formatted_street", "")
-        if not street:
-            return ""
-
-        number = components.get("number", "")
-        return f"{number} {street}" if number else street
+        return format_street_address(
+            components.get("country", ""),
+            components.get("formatted_street", ""),
+            components.get("number", ""),
+            components.get("secondarynumber", ""),
+        )

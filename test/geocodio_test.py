@@ -60,6 +60,17 @@ MEXICO_COMPONENTS = {
     "country": "MX",
 }
 
+MEXICO_SUBPREMISE_COMPONENTS = {
+    "number": "7",
+    "street": "Gral. Pedro Hinojosa",
+    "secondarynumber": "17",
+    "formatted_street": "Gral. Pedro Hinojosa",
+    "city": "Heroica Matamoros",
+    "state": "TAM",
+    "zip": "87499",
+    "country": "MX",
+}
+
 
 def _patch_response(monkeypatch, payload, captured=None):
     """Routes requests.post to a canned payload, optionally capturing the call args."""
@@ -143,9 +154,8 @@ def test_geocodio_caps_numberless_rooftop_at_street(monkeypatch):
 
 
 def test_geocodio_mexican_address_trails_the_house_number(monkeypatch):
-    """A Mexican street line keeps Geocodio's own order, with the number after the street."""
-    candidate = _candidate("rooftop", MEXICO_COMPONENTS, address_lines=["Avenida Paseo De La Reforma 489", "", "06500 Ciudad De Mexico, CMX"])
-    _patch_response(monkeypatch, _batch([candidate]))
+    """A Mexican street line carries the house number after the street."""
+    _patch_response(monkeypatch, _batch([_candidate("rooftop", MEXICO_COMPONENTS)]))
 
     record = SourceRecord(internal_key=0, address="Avenida Paseo De La Reforma 489", city="Ciudad De Mexico", stateprov="CMX", country="Mexico")
     result = geocodio.GeocodioProvider("key").geocode([record])[0]
@@ -157,23 +167,37 @@ def test_geocodio_mexican_address_trails_the_house_number(monkeypatch):
     assert result.accuracy == 100
 
 
-def test_geocodio_address_lines_outrank_the_components(monkeypatch):
-    """The response's own street line wins over joining the components in U.S. order."""
-    candidate = _candidate("rooftop", MEXICO_COMPONENTS, address_lines=["Avenida Paseo De La Reforma 489", "", ""])
+def test_geocodio_mexican_address_hyphenates_subpremise(monkeypatch):
+    """A Mexican subpremise is hyphenated onto the house number that follows the street."""
+    _patch_response(monkeypatch, _batch([_candidate("rooftop", MEXICO_SUBPREMISE_COMPONENTS)]))
+
+    record = SourceRecord(internal_key=0, address="Calle Poniente 2 Pedro Hinojosa Y Norte 7, 17", city="Heroica Matamoros", stateprov="Tamaulipas")
+    result = geocodio.GeocodioProvider("key").geocode([record])[0]
+
+    assert result.result_address == "Gral. Pedro Hinojosa 7-17"
+    assert result.result_city == "Heroica Matamoros"
+    assert result.result_stateprov == "TAM"
+
+
+def test_geocodio_mexican_street_without_number_keeps_the_street(monkeypatch):
+    """A Mexican street with no house number returns the street alone, graded down to street level."""
+    components = {key: value for key, value in MEXICO_COMPONENTS.items() if key != "number"}
+    _patch_response(monkeypatch, _batch([_candidate("street_center", components)]))
+
+    result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="Avenida Paseo De La Reforma")])[0]
+
+    assert result.result_address == "Avenida Paseo De La Reforma"
+    assert result.accuracy == 70
+
+
+def test_geocodio_ignores_us_ordered_address_lines(monkeypatch):
+    """Geocodio writes address_lines house number first for every country, so they are not used."""
+    candidate = _candidate("rooftop", MEXICO_COMPONENTS, address_lines=["489 Avenida Paseo De La Reforma", "", "06500 Ciudad De Mexico, CMX"])
     _patch_response(monkeypatch, _batch([candidate]))
 
     result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="Reforma 489")])[0]
 
-    assert result.result_address != "489 Avenida Paseo De La Reforma"
-
-
-def test_geocodio_falls_back_to_components_without_address_lines(monkeypatch):
-    """A response carrying no street line joins the components in the North American order."""
-    _patch_response(monkeypatch, _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)]))
-
-    result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW")])[0]
-
-    assert result.result_address == "1600 Pennsylvania Ave NW"
+    assert result.result_address == "Avenida Paseo De La Reforma 489"
 
 
 def test_geocodio_empty_candidates_is_no_match(monkeypatch):
