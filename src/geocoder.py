@@ -12,7 +12,7 @@ import argparse
 import json
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook, load_workbook
 
@@ -61,6 +61,17 @@ REQUIRED_FIELDS = ["ADDRESS", "CITY", "STATEPROV"]
 
 SOURCE_HEADERS = [f"SOURCE_{field_name}" for field_name in CANONICAL_FIELDS]
 RESULT_HEADERS = [f"RESULT_{field_name}" for field_name in CANONICAL_FIELDS]
+RESULT_ATTRIBUTES = {
+    "ID": "result_id",
+    "NAME": "result_name",
+    "ADDRESS": "result_address",
+    "CITY": "result_city",
+    "STATEPROV": "result_stateprov",
+    "POSTALCODE": "result_postalcode",
+    "COUNTRY": "result_country",
+    "LATITUDE": "latitude",
+    "LONGITUDE": "longitude",
+}
 META_HEADERS = [
     "GEOCODER_API",
     "MATCH_TYPE",
@@ -112,6 +123,11 @@ def clean_cell(value) -> str:
         return ""
 
     return str(value).strip()
+
+
+def cell_value(row, index: Optional[int]) -> str:
+    """Reads one trimmed cell from a row, or a blank when the column is absent."""
+    return clean_cell(row[index]) if index is not None and index < len(row) else ""
 
 
 def detect_columns(header_cells) -> Dict[str, int]:
@@ -168,10 +184,7 @@ def read_sheet_records(rows, column_map: Dict[str, int], sheet_name: str, countr
     """
     records = []
     for row in rows:
-        values = {}
-        for field_name in CANONICAL_FIELDS:
-            index = column_map.get(field_name)
-            values[field_name] = clean_cell(row[index]) if index is not None and index < len(row) else ""
+        values = {field_name: cell_value(row, column_map.get(field_name)) for field_name in CANONICAL_FIELDS}
 
         if not any(values.values()):
             continue
@@ -184,7 +197,7 @@ def read_sheet_records(rows, column_map: Dict[str, int], sheet_name: str, countr
     return records
 
 
-def blank_fields(column_map: Dict[str, int], sheet_name: str, country_per_sheet: bool) -> List[str]:
+def blank_fields(column_map: Dict[str, int], sheet_name: str, country_per_sheet: bool = False) -> List[str]:
     """
     Chooses the fields whose blank cells are worth flagging on a worksheet.
 
@@ -245,22 +258,8 @@ def build_headers(options: Options, include_results: bool) -> List[str]:
 
 def result_cells(result: GeocodeResult, api_name: str) -> List:
     """Renders the result and match-metadata cells of one row."""
-    return [
-        result.result_id,
-        result.result_name,
-        result.result_address,
-        result.result_city,
-        result.result_stateprov,
-        result.result_postalcode,
-        result.result_country,
-        result.latitude,
-        result.longitude,
-        api_name,
-        result.match_type,
-        result.accuracy,
-        result.location_type,
-        result.match_notes,
-    ]
+    values = [getattr(result, RESULT_ATTRIBUTES[field_name]) for field_name in CANONICAL_FIELDS]
+    return values + [api_name, result.match_type, result.accuracy, result.location_type, result.match_notes]
 
 
 def write_output_sheet(
@@ -393,6 +392,185 @@ def process_workbook(
     output.save(outfile)
 
 
+def detect_output_columns(header_cells) -> Tuple[Dict[str, int], Dict[str, int]]:
+    """
+    Locates the SOURCE_ and RESULT_ columns of a workbook this tool wrote.
+
+    Parameters
+    ----------
+    header_cells
+        The header row values to search through.
+
+    Return
+    ----------
+    maps : Tuple[Dict[str, int], Dict[str, int]]
+        The canonical fields found under each prefix, mapped to their columns.
+    """
+    labels = [clean_cell(value).upper() for value in header_cells]
+    return tuple(
+        {field_name: labels.index(f"{prefix}_{field_name}") for field_name in CANONICAL_FIELDS if f"{prefix}_{field_name}" in labels}
+        for prefix in ["SOURCE", "RESULT"]
+    )
+
+
+def read_output_row(row, index: int, source_map: Dict[str, int], result_map: Dict[str, int]) -> Tuple[SourceRecord, GeocodeResult]:
+    """
+    Rebuilds the source record and geocoded result a written row was made from.
+
+    Parameters
+    ----------
+    row
+        One data row of a workbook this tool wrote.
+    index : int
+        The row's position, used as the record's internal key.
+    source_map : Dict[str, int]
+        Each canonical field mapped to its SOURCE_ column.
+    result_map : Dict[str, int]
+        Each canonical field mapped to its RESULT_ column.
+
+    Return
+    ----------
+    pair : Tuple[SourceRecord, GeocodeResult]
+        The two sides of the row, ready to be compared.
+    """
+    record = SourceRecord(internal_key=index, **{name.lower(): cell_value(row, source_map.get(name)) for name in CANONICAL_FIELDS})
+    result = GeocodeResult(**{RESULT_ATTRIBUTES[name]: cell_value(row, column) for name, column in result_map.items()})
+    return record, result
+
+
+def extend_headers(header: List[str], names: List[str]) -> Dict[str, int]:
+    """
+    Finds the column of each named header, appending the ones the sheet lacks.
+
+    Parameters
+    ----------
+    header : List[str]
+        The header row, extended in place with any missing name.
+    names : List[str]
+        The headers the run needs a column for.
+
+    Return
+    ----------
+    columns : Dict[str, int]
+        Each name mapped to the column it occupies.
+    """
+    for name in names:
+        if name not in header:
+            header.append(name)
+    return {name: header.index(name) for name in names}
+
+
+def place_cells(row: List, columns: Dict[str, int], values: List) -> None:
+    """Writes values into their columns, padding the row out to reach them."""
+    for column, value in zip(columns.values(), values):
+        row.extend([""] * (column + 1 - len(row)))
+        row[column] = value
+
+
+def checked_headers(options: Options) -> List[str]:
+    """Names the check columns a re-run refreshes, in output order."""
+    return (PRE_HEADERS if options.preprocess else []) + (MATCH_HEADERS if options.compare else [])
+
+
+def check_cells(record: SourceRecord, result: GeocodeResult, flags: Dict[str, str], options: Options) -> List:
+    """Renders the pre-check and comparison cells requested for one row."""
+    cells = format_flags(flags) if options.preprocess else []
+    return cells + (compare_record(record, result) if options.compare else [])
+
+
+def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[List[str], List[List]]]:
+    """
+    Rebuilds one worksheet of written output with its check columns refreshed.
+
+    Every original cell is kept, so the provider columns, the raw match, and any
+    earlier flags survive the round trip.
+
+    Parameters
+    ----------
+    rows
+        An iterable of the worksheet's rows, header first.
+    sheet_name : str
+        The worksheet name, used when reporting what a sheet lacks.
+    options : Options
+        The checks to re-run.
+
+    Return
+    ----------
+    sheet : Optional[Tuple[List[str], List[List]]]
+        The header and data rows to write, or None when the sheet holds no
+        output of this tool to check.
+    """
+    header = [clean_cell(value) for value in next(rows, ())]
+    source_map, result_map = detect_output_columns(header)
+    if not source_map or (options.compare and not result_map):
+        wanted = "RESULT_" if source_map else "SOURCE_"
+        print(f"skipping sheet '{sheet_name}': no {wanted} columns to check")
+        return None
+
+    data = [list(row) for row in rows if any(clean_cell(value) for value in row)]
+    pairs = [read_output_row(row, index, source_map, result_map) for index, row in enumerate(data)]
+    flags = check_records([record for record, _ in pairs], blank_fields(source_map, sheet_name)) if options.preprocess else []
+    columns = extend_headers(header, checked_headers(options))
+
+    for index, (row, pair) in enumerate(zip(data, pairs)):
+        place_cells(row, columns, check_cells(*pair, flags[index] if flags else {}, options))
+    return header, data
+
+
+def recheck_workbook(infile: str, outfile: str, worksheet: Optional[str] = None, options: Optional[Options] = None) -> None:
+    """
+    Re-runs the checks over a workbook this tool already wrote, calling no API.
+
+    The requested check columns are refreshed in place when the sheet already
+    has them and appended when it does not, so a file geocoded without them can
+    be compared after the fact without paying for the results again.
+
+    Parameters
+    ----------
+    infile : str
+        The path of the workbook to read, as written by an earlier run.
+    outfile : str
+        The path of the workbook to create.
+    worksheet : Optional[str]
+        A single worksheet to process; when None, all sheets are processed.
+    options : Optional[Options]
+        The checks to re-run, or None for defaults.
+
+    Raises
+    ----------
+    SystemExit
+        If the named worksheet is missing, or no sheet held the expected columns.
+    """
+    options = options or Options()
+    source = load_workbook(infile, read_only=True, data_only=True)
+    try:
+        if worksheet is not None and worksheet not in source.sheetnames:
+            raise SystemExit(f"error: worksheet '{worksheet}' not found in {infile}")
+
+        output = Workbook()
+        output.remove(output.active)
+
+        processed = 0
+        for name in [worksheet] if worksheet else source.sheetnames:
+            sheet = recheck_sheet(source[name].iter_rows(values_only=True), name, options)
+            if sheet is None:
+                continue
+
+            header, data = sheet
+            worksheet_out = output.create_sheet(title=name)
+            worksheet_out.append(header)
+            for row in data:
+                worksheet_out.append(row)
+            processed += 1
+    finally:
+        source.close()
+
+    if processed == 0:
+        raise SystemExit("error: no worksheets held geocoder output; nothing written")
+
+    output.save(outfile)
+
+
 def parse_args(argv: Optional[List[str]] = None):
     """Takes and parses the command-line arguments given by the user."""
     parser = argparse.ArgumentParser(description="Geocode address rows in an Excel workbook.")
@@ -409,7 +587,7 @@ def parse_args(argv: Optional[List[str]] = None):
         "--api",
         default="census",
         metavar="{census|geocodio|google|none}",
-        help=f"geocoding provider, or '{NO_API}' to stop after pre-processing (default: census)",
+        help=f"geocoding provider, or '{NO_API}' to check a workbook without geocoding it (default: census)",
     )
     parser.add_argument(
         "--apiKey",
@@ -432,7 +610,8 @@ def parse_args(argv: Optional[List[str]] = None):
     parser.add_argument(
         "--compare",
         action="store_true",
-        help="add MATCH_ columns grading each source cell against the result cell",
+        help="add MATCH_ columns grading each source cell against the result cell; "
+        f"with --api {NO_API} it grades a workbook this tool wrote earlier",
     )
     parser.add_argument(
         "--debug",
@@ -491,8 +670,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     ----------
     SystemExit
         If the input file is missing, the output file already exists, the api is
-        unknown, a required API key is not configured, or --compare was asked for
-        without a provider to compare against.
+        unknown, or a required API key is not configured.
     """
     load_dotenv()
     args = parse_args(argv)
@@ -501,17 +679,19 @@ def main(argv: Optional[List[str]] = None) -> None:
         raise SystemExit(f"error: input file '{args.infile}' does not exist")
     if os.path.exists(args.outfile):
         raise SystemExit(f"error: output file '{args.outfile}' already exists")
-    if args.compare and args.api == NO_API:
-        raise SystemExit(f"error: --compare needs results to compare against; it cannot be used with --api {NO_API}")
 
     provider = select_provider(args)
-    options = Options(
-        country_per_sheet=args.country_per_sheet,
-        preprocess=args.preprocess or provider is None,
-        compare=args.compare,
-        debug=args.debug,
-    )
-    process_workbook(args.infile, args.outfile, provider, worksheet=args.worksheet, options=options)
+    if provider is None and args.compare:
+        options = Options(preprocess=args.preprocess, compare=True)
+        recheck_workbook(args.infile, args.outfile, worksheet=args.worksheet, options=options)
+    else:
+        options = Options(
+            country_per_sheet=args.country_per_sheet,
+            preprocess=args.preprocess or provider is None,
+            compare=args.compare,
+            debug=args.debug,
+        )
+        process_workbook(args.infile, args.outfile, provider, worksheet=args.worksheet, options=options)
     print(f"wrote {args.outfile}")
 
 

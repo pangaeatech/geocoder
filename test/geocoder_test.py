@@ -357,13 +357,79 @@ def test_api_none_writes_source_and_flags_only(tmp_path):
     assert "PO_BOX" in sheet[2][len(header) - 2].value
 
 
-def test_compare_with_api_none_rejected(tmp_path):
-    """--compare has nothing to compare against without a provider, so it exits."""
+def test_compare_recheck_adds_columns_to_written_output(tmp_path):
+    """--api none --compare grades a workbook geocoded earlier without --compare."""
+    infile = tmp_path / "in.xlsx"
+    geocoded = tmp_path / "geocoded.xlsx"
+    rechecked = tmp_path / "rechecked.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 Main St", "Anytown", "CA"]]})
+    process_workbook(str(infile), str(geocoded), MockProvider())
+
+    main([str(geocoded), str(rechecked), "--api", "none", "--compare"])
+
+    before = openpyxl.load_workbook(geocoded)["S"]
+    after = openpyxl.load_workbook(rechecked)["S"]
+    header = [cell.value for cell in after[1]]
+    assert [cell.value for cell in before[1]] + postprocess.MATCH_HEADERS == header
+    values = dict(zip(header, [cell.value for cell in after[2]]))
+    assert values["MATCH_ADDRESS"] == "EXACT"
+    assert values["MATCH_STATEPROV"] == "EXACT"
+    assert values["GEOCODER_API"] == "mock"
+
+
+def test_compare_recheck_refreshes_existing_columns(tmp_path):
+    """Re-checking a workbook that already has MATCH_ columns rewrites them in place."""
+    infile = tmp_path / "in.xlsx"
+    geocoded = tmp_path / "geocoded.xlsx"
+    rechecked = tmp_path / "rechecked.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 Main St", "Anytown", "CA"]]})
+    process_workbook(str(infile), str(geocoded), MockProvider(), options=Options(preprocess=True, compare=True))
+
+    main([str(geocoded), str(rechecked), "--api", "none", "--compare", "--preProcess"])
+
+    header = [cell.value for cell in openpyxl.load_workbook(rechecked)["S"][1]]
+    assert header.count("MATCH_ADDRESS") == 1
+    assert header.count("PRE_FLAGS") == 1
+    assert header == [cell.value for cell in openpyxl.load_workbook(geocoded)["S"][1]]
+
+
+def test_compare_recheck_rejects_a_source_workbook(tmp_path):
+    """A workbook that was never geocoded has no results to grade, so it exits."""
     infile = tmp_path / "in.xlsx"
     _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
 
     with pytest.raises(SystemExit):
         main([str(infile), str(tmp_path / "out.xlsx"), "--api", "none", "--compare"])
+
+
+def test_recheck_worksheet_selection(tmp_path):
+    """Naming a worksheet re-checks only that sheet."""
+    infile = tmp_path / "in.xlsx"
+    geocoded = tmp_path / "geocoded.xlsx"
+    rechecked = tmp_path / "rechecked.xlsx"
+    _make_workbook(
+        infile,
+        {
+            "One": [["Address", "City", "State"], ["1 A St", "Town", "CA"]],
+            "Two": [["Address", "City", "State"], ["2 B St", "City", "NY"]],
+        },
+    )
+    process_workbook(str(infile), str(geocoded), MockProvider())
+
+    main([str(geocoded), str(rechecked), "Two", "--api", "none", "--compare"])
+
+    assert openpyxl.load_workbook(rechecked).sheetnames == ["Two"]
+
+
+def test_recheck_unknown_worksheet_raises(tmp_path):
+    """Naming a worksheet the workbook does not have raises SystemExit."""
+    infile = tmp_path / "in.xlsx"
+    geocoded = tmp_path / "geocoded.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+    process_workbook(str(infile), str(geocoded), MockProvider())
+
+    with pytest.raises(SystemExit):
+        main([str(geocoded), str(tmp_path / "out.xlsx"), "Nope", "--api", "none", "--compare"])
 
 
 def test_write_output_sheet_length_mismatch_raises():
