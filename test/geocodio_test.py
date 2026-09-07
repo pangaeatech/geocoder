@@ -62,6 +62,16 @@ PLACE_COMPONENTS = {
     "country": "US",
 }
 
+MEXICO_COMPONENTS = {
+    "number": "489",
+    "street": "Avenida Paseo De La Reforma",
+    "formatted_street": "Avenida Paseo De La Reforma",
+    "city": "Ciudad De Mexico",
+    "state": "CMX",
+    "zip": "06500",
+    "country": "MX",
+}
+
 
 def _patch_response(monkeypatch, payload, captured=None):
     """Routes requests.post to a canned payload, optionally capturing the call args."""
@@ -129,15 +139,59 @@ def test_geocodio_caps_place_at_city(monkeypatch):
     assert result.accuracy == 40
 
 
-def test_geocodio_street_without_number_is_not_rooftop(monkeypatch):
-    """A street without a house number leaves the address blank so grading stays coarse."""
+def test_geocodio_street_without_number_keeps_street_name(monkeypatch):
+    """A street without a house number is still returned, graded down to street level."""
     components = {key: value for key, value in ROOFTOP_COMPONENTS.items() if key != "number"}
     _patch_response(monkeypatch, _batch([_candidate("street_center", components)]))
 
     result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="Stornoway St")])[0]
 
-    assert result.result_address == ""
-    assert result.accuracy == 50
+    assert result.result_address == "Pennsylvania Ave NW"
+    assert result.accuracy == 70
+
+
+def test_geocodio_caps_numberless_rooftop_at_street(monkeypatch):
+    """A rooftop accuracy_type cannot outrank street level without a house number."""
+    components = {key: value for key, value in ROOFTOP_COMPONENTS.items() if key != "number"}
+    _patch_response(monkeypatch, _batch([_candidate("rooftop", components)]))
+
+    result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="Stornoway St")])[0]
+
+    assert result.accuracy == 70
+
+
+def test_geocodio_mexican_address_trails_the_house_number(monkeypatch):
+    """A Mexican street line keeps Geocodio's own order, with the number after the street."""
+    candidate = _candidate("rooftop", MEXICO_COMPONENTS, address_lines=["Avenida Paseo De La Reforma 489", "", "06500 Ciudad De Mexico, CMX"])
+    _patch_response(monkeypatch, _batch([candidate]))
+
+    record = SourceRecord(internal_key=0, address="Avenida Paseo De La Reforma 489", city="Ciudad De Mexico", stateprov="CMX", country="Mexico")
+    result = geocodio.GeocodioProvider("key").geocode([record])[0]
+
+    assert result.result_address == "Avenida Paseo De La Reforma 489"
+    assert result.result_city == "Ciudad De Mexico"
+    assert result.result_stateprov == "CMX"
+    assert result.result_country == "MX"
+    assert result.accuracy == 100
+
+
+def test_geocodio_address_lines_outrank_the_components(monkeypatch):
+    """The response's own street line wins over joining the components in U.S. order."""
+    candidate = _candidate("rooftop", MEXICO_COMPONENTS, address_lines=["Avenida Paseo De La Reforma 489", "", ""])
+    _patch_response(monkeypatch, _batch([candidate]))
+
+    result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="Reforma 489")])[0]
+
+    assert result.result_address != "489 Avenida Paseo De La Reforma"
+
+
+def test_geocodio_falls_back_to_components_without_address_lines(monkeypatch):
+    """A response carrying no street line joins the components in the North American order."""
+    _patch_response(monkeypatch, _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)]))
+
+    result = geocodio.GeocodioProvider("key").geocode([SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW")])[0]
+
+    assert result.result_address == "1600 Pennsylvania Ave NW"
 
 
 def test_geocodio_empty_candidates_is_no_match(monkeypatch):

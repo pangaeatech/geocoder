@@ -24,14 +24,19 @@ class GeocodioProvider(Provider):
     one result entry per input in the same order, so entries are matched back to
     records by position and the batch is rejected if the counts differ. Requests
     require an API key, resolved from --apiKey or the GEOCODIO_API_KEY
-    environment variable, and cover U.S. and Canadian addresses only.
+    environment variable, and cover U.S., Canadian, Mexican, and U.K. addresses.
 
     Accuracy is driven by the response ``accuracy_type`` rather than the returned
     address fields: Geocodio echoes a full formatted address even when it only
     interpolated a point along a street range or fell back to a place centroid,
     so grading the fields alone would report those coarser matches as rooftop
     precision. Each accuracy_type therefore caps the graded score at the
-    precision it actually represents.
+    precision it actually represents, and a match resolved to a street with no
+    house number is capped lower still.
+
+    Street addresses are read from the response's own ``address_lines`` rather
+    than assembled here, since Geocodio already writes that line in the
+    convention of the country the match belongs to.
     """
 
     requires_key = True
@@ -110,19 +115,31 @@ class GeocodioProvider(Provider):
         an interpolated or centroid match cannot report rooftop precision on the
         strength of the echoed address fields.
         """
-        result = self._build_result(match)
-        cap = self.ACCURACY_TYPE_LEVELS.get(result.location_type, AccuracyLevel.NONE)
-        result.accuracy = grade_accuracy(result, cap)
+        components = match.get("address_components", {})
+        result = self._build_result(match, components)
+        result.accuracy = grade_accuracy(result, self._accuracy_cap(result, components))
         return result
 
-    def _build_result(self, match: Dict) -> GeocodeResult:
+    def _accuracy_cap(self, result: GeocodeResult, components: Dict[str, str]) -> AccuracyLevel:
+        """
+        Returns the highest accuracy the match can claim.
+
+        The ``accuracy_type`` sets the ceiling, and an address without a house
+        number lowers it to street level: the street alone resolves no finer
+        than the geographic centre of the whole street.
+        """
+        cap = self.ACCURACY_TYPE_LEVELS.get(result.location_type, AccuracyLevel.NONE)
+        if components.get("number"):
+            return cap
+        return min(cap, AccuracyLevel.STREET)
+
+    def _build_result(self, match: Dict, components: Dict[str, str]) -> GeocodeResult:
         """Maps a Geocodio candidate to a GeocodeResult without scoring its accuracy."""
-        components = match.get("address_components", {})
         location = match.get("location", {})
         accuracy_type = match.get("accuracy_type", "")
 
         return GeocodeResult(
-            result_address=self._street_address(components),
+            result_address=self._street_address(match, components),
             result_city=components.get("city", ""),
             result_stateprov=components.get("state", ""),
             result_postalcode=components.get("zip", ""),
@@ -135,16 +152,27 @@ class GeocodioProvider(Provider):
         )
 
     @staticmethod
-    def _street_address(components: Dict[str, str]) -> str:
+    def _street_address(match: Dict, components: Dict[str, str]) -> str:
         """
-        Joins house number and street into a street address, or blank without a number.
+        Returns the street line of a match in the convention of its own country.
 
-        A street without a house number is only street-level, so leaving the
-        address blank lets grade_accuracy fall through to the coarser field the
-        result actually resolved.
+        Geocodio composes ``address_lines`` per country, trailing the house
+        number after the street for Mexican addresses and leading with it for
+        North American ones, so its first line is preferred over joining the
+        parts here in one fixed order. A response without that line falls back
+        to the North American order.
+
+        A street with no house number still yields an address, since the street
+        name alone locates the row to that street; _accuracy_cap grades such a
+        result no higher than street level.
         """
-        number = components.get("number", "")
+        lines = match.get("address_lines", [])
+        if lines and lines[0]:
+            return lines[0]
+
         street = components.get("formatted_street", "")
-        if number and street:
-            return f"{number} {street}"
-        return ""
+        if not street:
+            return ""
+
+        number = components.get("number", "")
+        return f"{number} {street}" if number else street
