@@ -106,6 +106,21 @@ def test_detect_columns_common_shorthand(label, field):
     assert detect_columns([label]) == {field: 0}
 
 
+def test_missing_name_column_is_not_reported(capsys):
+    """A sheet with no NAME column geocodes as well as one with it, so it passes quietly."""
+    fields = geocoder.blank_fields({"ADDRESS": 0, "CITY": 1, "STATEPROV": 2, "POSTALCODE": 3, "COUNTRY": 4}, "Sheet1")
+
+    assert capsys.readouterr().out == ""
+    assert "name" not in fields
+
+
+def test_missing_query_column_is_reported(capsys):
+    """A column the provider would have been given is reported once for the sheet."""
+    geocoder.blank_fields({"ADDRESS": 0, "CITY": 1, "STATEPROV": 2}, "Sheet1")
+
+    assert "no POSTALCODE, COUNTRY column" in capsys.readouterr().out
+
+
 def test_detect_columns_first_match_wins():
     """When several columns match one field, the first column wins."""
     mapping = detect_columns(["address", "street address"])

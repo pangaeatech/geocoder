@@ -25,7 +25,7 @@ from .api import (
     resolve_api_key,
 )
 from .postprocess import MATCH_HEADERS, compare_record
-from .preprocess import BLANK_CHECKED_FIELDS, PRE_HEADERS, check_records, format_flags
+from .preprocess import BLANK_CHECKED_FIELDS, PRE_HEADERS, QUERY_FIELDS, check_records, format_flags
 
 CANONICAL_FIELDS = [
     "ID",
@@ -205,8 +205,10 @@ def blank_fields(column_map: Dict[str, int], sheet_name: str, country_per_sheet:
 
     A field the sheet has no column for is blank on every row, which says
     something about the sheet rather than about any one row, so it is reported
-    once on stdout and left out of the per-row checks. COUNTRY counts as filled
-    when the sheet name supplies it.
+    once on stdout and left out of the per-row checks. Only a column the
+    provider is given is worth reporting: a sheet with no NAME column geocodes
+    exactly as well as one with it, since no query carries a name. COUNTRY
+    counts as filled when the sheet name supplies it.
 
     Parameters
     ----------
@@ -224,7 +226,7 @@ def blank_fields(column_map: Dict[str, int], sheet_name: str, country_per_sheet:
     """
     filled = set(column_map) | ({"COUNTRY"} if country_per_sheet else set())
     present = [name for name in BLANK_CHECKED_FIELDS if name.upper() in filled]
-    missing = [name.upper() for name in BLANK_CHECKED_FIELDS if name.upper() not in filled]
+    missing = [name.upper() for name in QUERY_FIELDS if name.upper() not in filled]
     if missing:
         print(f"sheet '{sheet_name}': no {', '.join(missing)} column; every row is missing it")
     return present

@@ -17,7 +17,9 @@ from .text import words
 
 PRE_HEADERS = ["PRE_FLAGS"]
 
-BLANK_CHECKED_FIELDS = ["name", "address", "city", "stateprov", "postalcode", "country"]
+QUERY_FIELDS = ["address", "city", "stateprov", "postalcode", "country"]
+
+BLANK_CHECKED_FIELDS = ["name"] + QUERY_FIELDS
 
 PLACEHOLDER_VALUES = {
     "-",

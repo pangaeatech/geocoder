@@ -253,6 +253,8 @@ def test_unsupported_country_flagged(country, expected):
         ("QC", "Canada", False),
         ("Qu\u00e9bec", "Canada", False),
         ("CA", "Canada", True),
+        ("Northern Mariana Islands", "US", False),
+        ("GU", "US", False),
         ("Jalisco", "MX", False),
         ("XX", "France", False),
     ],
@@ -266,6 +268,12 @@ def test_coordinates_outside_their_country_flagged():
     """Coordinates that fall outside the row's country are reported with it."""
     flags = check_record(_record(latitude="19.4", longitude="-99.1", country="US"))
     assert flags["COORDINATES_OUTSIDE_COUNTRY"] == "19.4, -99.1 is not in United States"
+
+
+def test_territory_coordinates_are_inside_their_country():
+    """A United States territory is United States soil, however far from the states."""
+    record = _record(stateprov="MP", postalcode="96952", latitude="14.97377", longitude="145.614689")
+    assert "COORDINATES_OUTSIDE_COUNTRY" not in check_record(record)
 
 
 def test_coordinates_inside_their_country_not_flagged():
