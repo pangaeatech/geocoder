@@ -12,7 +12,7 @@ from typing import Dict, List
 
 import requests
 
-from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, grade_accuracy, register
+from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, format_street_address, grade_accuracy, register
 
 
 @register("google")
@@ -60,8 +60,6 @@ class GoogleProvider(Provider):
         "postal_code": "result_postalcode",
         "country": "result_country",
     }
-
-    ROUTE_FIRST_COUNTRIES = {"MX"}
 
     def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
         """
@@ -156,32 +154,13 @@ class GoogleProvider(Provider):
                     extracted[field_name] = component.get("short_name", "")
         return extracted
 
-    @classmethod
-    def _street_address(cls, components: Dict[str, str]) -> str:
-        """
-        Assembles the street address in the convention of the result's country.
-
-        Most countries lead with the street number, but those in
-        ROUTE_FIRST_COUNTRIES place it after the route, hyphenate any subpremise
-        onto it, and append the sublocality, because a street number there is
-        only unique within its sublocality.
-
-        A route with no street number still yields an address, since the street
-        name alone locates the row to that street; _accuracy_cap grades such a
-        result no higher than street level.
-        """
-        route = components.get("route", "")
-        if not route:
-            return ""
-
-        number = components.get("street_number", "")
-        if components.get("result_country", "") not in cls.ROUTE_FIRST_COUNTRIES:
-            return f"{number} {route}" if number else route
-
-        subpremise = components.get("subpremise", "")
-        if number and subpremise:
-            number = f"{number}-{subpremise}"
-
-        address = f"{route} {number}" if number else route
-        sublocality = components.get("sublocality", "")
-        return f"{address}, {sublocality}" if sublocality else address
+    @staticmethod
+    def _street_address(components: Dict[str, str]) -> str:
+        """Assembles the street address from the response components in the convention of the result's country."""
+        return format_street_address(
+            components.get("result_country", ""),
+            components.get("route", ""),
+            components.get("street_number", ""),
+            components.get("subpremise", ""),
+            components.get("sublocality", ""),
+        )
