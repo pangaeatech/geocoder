@@ -31,7 +31,7 @@ DOMINION_LAND_SURVEY = rf"""
     {SURVEY_GRID}                               # section, township and range
     (?:[-\s]?[WE]\s?[1-6]?M?|[-\s][1-6]M?)      # meridian, however it is written
   | {SURVEY_GRID}                               # section, township and range, unqualified
-    [-\s]?[WE]\s?[1-6]M?                        # meridian, which must then be lettered and numbered
+    [-\s]?[WE]\s?[1-6]M?                        # meridian, lettered and numbered so a lot number cannot match
 """
 
 NATIONAL_TOPOGRAPHIC_SYSTEM = r"""
@@ -53,27 +53,11 @@ def strip_legal_land_description(value: str) -> str:
     """
     Removes any Canadian legal land description from the given value.
 
-    Legal land descriptions locate an oil rig on a survey grid rather than on a
-    street, and no supported provider covers either grid: the prairie provinces
-    use the Dominion Land Survey (``01-17-040-06w4``) and British Columbia the
-    National Topographic System (``A-51-I/94-O-10``). Left in a query they are
-    misread as a street address and drag the match onto an unrelated road, so
-    the surrounding text is kept and the description itself is dropped.
-
-    Both grids are written inconsistently: a Dominion meridian may be lettered
-    (``06w4``), spelled out (``06-W4M``) or reduced to its number (``19-4``),
-    and a Topographic map sheet may be separated by a slash, a space, or nothing
-    at all.
-
-    A meridian reduced to a bare number or a bare letter is only recognized when
-    the quarter section or legal subdivision precedes it, because ``5-10-15-2``
-    on its own is indistinguishable from an ordinary hyphenated street address
-    such as a lot or box number. A meridian carrying both its letter and its
-    number is distinctive enough to stand alone.
-
-    Whatever is left is only kept when it still holds a letter, since the digits
-    stranded by a well identifier such as ``200 /D-050-E/094-H-05/ 00`` name
-    nothing a geocoder can find.
+    A legal land description locates an oil rig on a survey grid rather than on
+    a street, and no supported provider covers one: left in a query it is
+    misread as a street address and drags the match onto an unrelated road.
+    What remains is kept only when it still holds a letter, since the digits a
+    well identifier strands behind locate nothing on their own.
 
     Parameters
     ----------
@@ -113,9 +97,8 @@ class SourceRecord:
         """
         Joins the non-blank address components into a single query string.
 
-        Any legal land description is stripped from the street and city first, so
-        a rig row is queried by the province it sits in rather than by a grid
-        reference no provider can resolve.
+        Any legal land description is stripped from the street and city, so a rig
+        row is queried by the province it sits in rather than by a grid reference.
         """
         street = strip_legal_land_description(self.address)
         city = strip_legal_land_description(self.city)
@@ -210,13 +193,12 @@ def grade_accuracy(result: GeocodeResult, cap: Optional[int] = None) -> int:
 
 def apply_legal_land_limit(record: SourceRecord, result: GeocodeResult) -> GeocodeResult:
     """
-    Bounds a result at the precision its source row could ever support.
+    Bounds a result at the precision its source row could support.
 
-    A row carrying a legal land description is queried with that description
-    stripped out, so the provider only ever saw the surrounding province and the
-    match it returned describes that province rather than the survey parcel. The
-    score is capped there and the result annotated, so a coincidentally
-    street-level answer is not mistaken for the rig's location.
+    A row carrying a legal land description is queried without it, so the
+    provider only ever saw the surrounding province. The score is capped there
+    and annotated, rather than reporting a coincidental street-level answer as
+    the rig's location.
 
     Parameters
     ----------
