@@ -661,7 +661,7 @@ def parse_args(argv: Optional[List[str]] = None):
         "--preProcess",
         dest="preprocess",
         action="store_true",
-        help="add PRE_FLAGS and PRE_NOTES columns flagging problems in the source rows",
+        help="add a PRE_FLAGS column flagging problems in the source rows",
     )
     parser.add_argument(
         "--compare",

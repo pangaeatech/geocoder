@@ -274,6 +274,11 @@ def test_coordinates_inside_their_country_not_flagged():
 
 
 def test_format_flags_renders_names_and_notes():
-    """Flag names fill PRE_FLAGS and only the flags carrying notes fill PRE_NOTES."""
+    """Every flag reaches the one cell, each with its note where it has one."""
     cells = format_flags({"BLANK_CITY": "", "PO_BOX": "PO Box 12"})
-    assert cells == ["BLANK_CITY, PO_BOX", "PO_BOX: PO Box 12"]
+    assert cells == ["BLANK_CITY; PO_BOX: PO Box 12"]
+
+
+def test_format_flags_of_a_clean_row_is_blank():
+    """A row with nothing wrong with it leaves the column empty."""
+    assert format_flags({}) == [""]

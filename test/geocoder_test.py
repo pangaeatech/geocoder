@@ -323,8 +323,7 @@ def test_preprocess_adds_flag_columns(tmp_path):
     header = [cell.value for cell in sheet[1]]
     assert header == (geocoder.SOURCE_HEADERS + preprocess.PRE_HEADERS + geocoder.RESULT_HEADERS + geocoder.META_HEADERS)
     values = dict(zip(header, [cell.value for cell in sheet[2]]))
-    assert "PO_BOX" in values["PRE_FLAGS"]
-    assert "PO Box" in values["PRE_NOTES"]
+    assert values["PRE_FLAGS"] == "PO_BOX: PO Box"
 
 
 def test_compare_adds_match_columns(tmp_path):
@@ -363,7 +362,7 @@ def test_api_none_writes_source_and_flags_only(tmp_path):
     sheet = openpyxl.load_workbook(outfile)["S"]
     header = [cell.value for cell in sheet[1]]
     assert header == geocoder.SOURCE_HEADERS + preprocess.PRE_HEADERS
-    assert "PO_BOX" in sheet[2][len(header) - 2].value
+    assert "PO_BOX" in sheet[2][len(header) - 1].value
 
 
 def test_compare_recheck_adds_columns_to_written_output(tmp_path):

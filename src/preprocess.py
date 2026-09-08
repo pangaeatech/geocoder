@@ -15,7 +15,7 @@ from .api import SourceRecord
 from .regions import COUNTRY_NAMES, COUNTRY_SUBDIVISIONS, country_code, subdivision_code, within_country
 from .text import words
 
-PRE_HEADERS = ["PRE_FLAGS", "PRE_NOTES"]
+PRE_HEADERS = ["PRE_FLAGS"]
 
 BLANK_CHECKED_FIELDS = ["name", "address", "city", "stateprov", "postalcode", "country"]
 
@@ -415,7 +415,12 @@ def check_records(records: List[SourceRecord], blank_fields: Optional[List[str]]
 
 def format_flags(flags: Dict[str, str]) -> List[str]:
     """
-    Renders one record's flags as the PRE_FLAGS and PRE_NOTES cell values.
+    Renders one record's flags as the cells of the PRE_ section.
+
+    Each flag is written on its own, followed by its note where it has one, so
+    that the whole of what a check found stays in one place: a reader scanning
+    the column sees the flag names, and searching for one finds its detail
+    alongside rather than in a second column that is blank as often as not.
 
     Parameters
     ----------
@@ -425,9 +430,6 @@ def format_flags(flags: Dict[str, str]) -> List[str]:
     Return
     ----------
     cells : List[str]
-        The comma-joined flag names and the notes of the flags that carry one.
+        One cell per PRE_ header, holding every flag and the notes it carries.
     """
-    return [
-        ", ".join(flags),
-        "; ".join(f"{name}: {note}" for name, note in flags.items() if note),
-    ]
+    return ["; ".join(f"{name}: {note}" if note else name for name, note in flags.items())]
