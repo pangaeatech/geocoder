@@ -10,6 +10,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 
 import csv
 import io
+import json
 from typing import Any, Dict, Iterator, List, Tuple
 
 import requests
@@ -61,6 +62,10 @@ class CensusProvider(Provider):
         Country is excluded because the addressbatch CSV has no country column,
         while the benchmark and vintage select which dataset answers the query.
 
+        The components are JSON-encoded rather than joined on a separator, so a
+        row whose fields happen to contain that separator cannot produce the same
+        key as a different row and be answered with its response.
+
         Parameters
         ----------
         record : SourceRecord
@@ -72,7 +77,7 @@ class CensusProvider(Provider):
             The query text identifying this record's response.
         """
         parts = [record.address, record.city, record.stateprov, record.postalcode, self.BENCHMARK, self.VINTAGE]
-        return "|".join(parts)
+        return json.dumps(parts, ensure_ascii=False)
 
     def _fetch(self, records: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
         """

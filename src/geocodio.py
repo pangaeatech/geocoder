@@ -8,7 +8,7 @@ Geocoder — Geocodio provider
 Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
-from typing import Dict, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 import requests
 
@@ -60,9 +60,12 @@ class GeocodioProvider(Provider):
 
     EXACT_TYPES = {"rooftop", "point"}
 
-    def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
+    def _fetch(self, records: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
         """
-        Geocodes records in batches and returns one result per record, in order.
+        Posts records in batches, yielding each record with its response entry.
+
+        Yielding per batch rather than per run means an interrupted job keeps
+        every batch that already came back.
 
         Parameters
         ----------
@@ -71,22 +74,18 @@ class GeocodioProvider(Provider):
 
         Return
         ----------
-        List[GeocodeResult]
-            One result per input record, aligned by position.
+        Iterator[Tuple[SourceRecord, Dict[str, Any]]]
+            Each record paired with its raw Geocodio response entry.
         """
-        results_by_key: Dict[int, GeocodeResult] = {}
         for start in range(0, len(records), self.BATCH_SIZE):
-            self._geocode_batch(records[start : start + self.BATCH_SIZE], results_by_key)
+            yield from self._fetch_batch(records[start : start + self.BATCH_SIZE])
 
-        return [results_by_key.get(record.internal_key, GeocodeResult(match_notes="No match")) for record in records]
-
-    def _geocode_batch(self, batch: List[SourceRecord], results_by_key: Dict[int, GeocodeResult]) -> None:
-        """Posts one batch, verifies its entry count, and stores each result by internal key."""
+    def _fetch_batch(self, batch: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
+        """Posts one batch, verifies its entry count, and matches entries back by position."""
         entries = self._post_batch(batch)
         if len(entries) != len(batch):
             raise ValueError(f"Geocodio returned {len(entries)} entries for {len(batch)} submitted records; the batch response may have changed")
-        for record, entry in zip(batch, entries):
-            results_by_key[record.internal_key] = self._parse_entry(entry)
+        yield from zip(batch, entries)
 
     def _post_batch(self, batch: List[SourceRecord]) -> List[Dict]:
         """Posts one batch through the retrying request helper and returns the ordered result entries."""
@@ -101,23 +100,30 @@ class GeocodioProvider(Provider):
         )
         return response.json().get("results", [])
 
-    def _parse_entry(self, entry: Dict) -> GeocodeResult:
-        """Grades the best candidate for one input, or returns a no-match when none was found."""
-        matches = entry.get("response", {}).get("results", [])
-        if not matches:
-            return GeocodeResult(match_notes="No match", raw=entry)
-        return self._parse_result(matches[0])
-
-    def _parse_result(self, match: Dict) -> GeocodeResult:
+    def parse(self, raw: Dict[str, Any]) -> GeocodeResult:
         """
-        Converts one Geocodio candidate into a normalized GeocodeResult.
+        Converts one Geocodio response entry into a normalized GeocodeResult.
 
         The graded accuracy is capped at the tier implied by ``accuracy_type`` so
         an interpolated or centroid match cannot report rooftop precision on the
         strength of the echoed address fields.
+
+        Parameters
+        ----------
+        raw : Dict[str, Any]
+            One Geocodio response entry.
+
+        Return
+        ----------
+        GeocodeResult
+            The normalized, graded result that entry describes.
         """
-        components = match.get("address_components", {})
-        result = self._build_result(match, components)
+        matches = raw.get("response", {}).get("results", [])
+        if not matches:
+            return GeocodeResult(match_notes="No match", raw=raw)
+
+        components = matches[0].get("address_components", {})
+        result = self._build_result(raw, components)
         result.accuracy = grade_accuracy(result, self._accuracy_cap(result, components))
         return result
 
@@ -134,8 +140,15 @@ class GeocodioProvider(Provider):
             return cap
         return min(cap, AccuracyLevel.STREET)
 
-    def _build_result(self, match: Dict, components: Dict[str, str]) -> GeocodeResult:
-        """Maps a Geocodio candidate to a GeocodeResult without scoring its accuracy."""
+    def _build_result(self, raw: Dict[str, Any], components: Dict[str, str]) -> GeocodeResult:
+        """
+        Maps the best Geocodio candidate to a GeocodeResult without scoring its accuracy.
+
+        The whole response entry is kept as the raw value rather than the single
+        candidate it was read from, so what is cached and reported is what
+        Geocodio actually said.
+        """
+        match = raw["response"]["results"][0]
         location = match.get("location", {})
         accuracy_type = match.get("accuracy_type", "")
 
@@ -149,7 +162,7 @@ class GeocodioProvider(Provider):
             longitude=str(location.get("lng", "")),
             match_type="exact" if accuracy_type in self.EXACT_TYPES else "non-exact",
             location_type=accuracy_type,
-            raw=match,
+            raw=raw,
         )
 
     @staticmethod

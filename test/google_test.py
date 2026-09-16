@@ -249,7 +249,7 @@ def test_google_requests_each_distinct_address_once(monkeypatch):
 
     def fake_get(_url, params=None, **_kwargs):
         requested.append(params["address"])
-        return _FakeResponse(_result("ROOFTOP", ROOFTOP_COMPONENTS))
+        return FakeResponse(_result("ROOFTOP", ROOFTOP_COMPONENTS))
 
     monkeypatch.setattr(google.requests, "get", fake_get)
 

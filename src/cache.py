@@ -16,6 +16,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
 DEFAULT_CACHE_FILE = "geocoder-cache.sqlite"
 
+REQUIRED_COLUMNS = ("api", "query", "response")
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
     api TEXT NOT NULL,
@@ -97,7 +99,11 @@ class Cache:
     @staticmethod
     def _open_reader(path: str) -> sqlite3.Connection:
         """
-        Opens a cache file read-only and confirms it carries the cache table.
+        Opens a cache file read-only and confirms its cache table is usable.
+
+        The columns lookups read are checked as well as the table itself, so a
+        foreign database that happens to hold a differently shaped cache table is
+        refused here rather than failing mid-run on the first lookup.
 
         Parameters
         ----------
@@ -112,18 +118,23 @@ class Cache:
         Raises
         ----------
         ValueError
-            If the file is not a SQLite database or holds no cache table.
+            If the file is not a SQLite database or holds no usable cache table.
         """
         connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
         try:
-            found = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cache'").fetchone()
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(cache)")}
         except sqlite3.DatabaseError as error:
             connection.close()
             raise ValueError(f"'{path}' is not a readable SQLite database: {error}") from error
 
-        if found is None:
+        if not columns:
             connection.close()
             raise ValueError(f"'{path}' is not a geocoder cache (it has no 'cache' table)")
+
+        missing = [column for column in REQUIRED_COLUMNS if column not in columns]
+        if missing:
+            connection.close()
+            raise ValueError(f"'{path}' is not a geocoder cache (its 'cache' table is missing {', '.join(missing)})")
         return connection
 
     def _connections(self) -> Iterator[sqlite3.Connection]:

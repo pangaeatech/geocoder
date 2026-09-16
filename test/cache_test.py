@@ -172,6 +172,18 @@ def test_read_only_cache_rejects_a_foreign_database(tmp_path):
         Cache(None, [path])
 
 
+def test_read_only_cache_rejects_a_differently_shaped_cache_table(tmp_path):
+    """A 'cache' table without the columns lookups read is refused up front."""
+    path = str(tmp_path / "other.sqlite")
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE cache (key TEXT, value TEXT)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(ValueError):
+        Cache(None, [path])
+
+
 def test_read_only_cache_rejects_a_non_database(tmp_path):
     """A file that is not a SQLite database is refused with a clear error."""
     path = tmp_path / "notes.txt"

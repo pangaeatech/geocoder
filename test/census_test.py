@@ -175,6 +175,15 @@ def test_census_cache_key_ignores_country_and_pins_dataset():
     assert census.CensusProvider.VINTAGE in provider.cache_key(usa)
 
 
+def test_census_cache_key_keeps_shifted_components_distinct():
+    """Rows whose components differ only in where a field boundary falls get distinct keys."""
+    provider = census.CensusProvider()
+    split = SourceRecord(internal_key=0, address="1 Main St|Town", city="CA")
+    shifted = SourceRecord(internal_key=1, address="1 Main St", city="Town|CA")
+
+    assert provider.cache_key(split) != provider.cache_key(shifted)
+
+
 def test_census_posts_each_distinct_address_once(monkeypatch):
     """Repeated addresses are collapsed so the posted CSV carries one row each."""
     posted = []
