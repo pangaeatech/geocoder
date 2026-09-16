@@ -11,7 +11,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 import pytest
 
 from src.api import SourceRecord
-from src.preprocess import check_record, check_records, format_flags
+from src.preprocess import check_record, check_records
 
 
 def _record(**attributes):
@@ -47,6 +47,14 @@ def test_placeholder_address_flagged():
     """A stand-in address is reported with the offending text."""
     flags = check_record(_record(address="N/A"))
     assert flags["PLACEHOLDER"] == "N/A"
+
+
+@pytest.mark.parametrize("address", ["-", " . "])
+def test_punctuation_only_address_is_a_placeholder(address):
+    """An address written as a single mark is a stand-in, not a nameless street."""
+    flags = check_record(_record(address=address))
+    assert flags["PLACEHOLDER"] == address
+    assert "NO_STREET_NUMBER" not in flags
 
 
 def test_rural_route_flagged():
@@ -165,6 +173,8 @@ def test_blank_fields_limited_to_named_columns():
         ("abc", "-75.0", True),
         ("91.0", "-75.0", True),
         ("0", "0", True),
+        ("nan", "nan", True),
+        ("inf", "-75.0", True),
     ],
 )
 def test_source_coordinates_validated(latitude, longitude, expected):
@@ -195,6 +205,15 @@ def test_tenants_of_one_building_share_rather_than_duplicate():
     ]
 
     flags = check_records(records)
+    assert flags[0]["SHARED_ADDRESS"] == "address is shared with 1 other row(s)"
+    assert "DUPLICATE" not in flags[0]
+
+
+def test_rows_without_a_name_share_rather_than_duplicate():
+    """With no name to agree on, a repeated address is only a shared address."""
+    records = [SourceRecord(internal_key=index, address="1 Main St", city="Anytown", stateprov="CA") for index in range(2)]
+
+    flags = check_records(records, ["address"])
     assert flags[0]["SHARED_ADDRESS"] == "address is shared with 1 other row(s)"
     assert "DUPLICATE" not in flags[0]
 
@@ -264,6 +283,13 @@ def test_stateprov_checked_against_its_country(stateprov, country, expected):
     assert ("INVALID_STATEPROV" in check_record(_record(stateprov=stateprov, country=country))) is expected
 
 
+def test_non_finite_coordinates_are_invalid_rather_than_foreign():
+    """A coordinate that parses but is not a real number is not blamed on its country."""
+    flags = check_record(_record(latitude="nan", longitude="nan", country="US"))
+    assert flags["INVALID_COORDINATES"] == "nan, nan is not a finite coordinate"
+    assert "COORDINATES_OUTSIDE_COUNTRY" not in flags
+
+
 def test_coordinates_outside_their_country_flagged():
     """Coordinates that fall outside the row's country are reported with it."""
     flags = check_record(_record(latitude="19.4", longitude="-99.1", country="US"))
@@ -279,14 +305,3 @@ def test_territory_coordinates_are_inside_their_country():
 def test_coordinates_inside_their_country_not_flagged():
     """A coordinate pair within the country's extent passes unremarked."""
     assert not check_record(_record(latitude="34.1", longitude="-118.4"))
-
-
-def test_format_flags_renders_names_and_notes():
-    """Every flag reaches the one cell, each with its note where it has one."""
-    cells = format_flags({"BLANK_CITY": "", "PO_BOX": "PO Box 12"})
-    assert cells == ["BLANK_CITY; PO_BOX: PO Box 12"]
-
-
-def test_format_flags_of_a_clean_row_is_blank():
-    """A row with nothing wrong with it leaves the column empty."""
-    assert format_flags({}) == [""]

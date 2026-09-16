@@ -19,13 +19,15 @@ from openpyxl import Workbook, load_workbook
 from .api import (
     KEY_ENV_VARS,
     PROVIDERS,
+    AccuracyLevel,
     GeocodeResult,
     Provider,
     SourceRecord,
     resolve_api_key,
 )
+from .flags import format_flags
 from .postprocess import MATCH_HEADERS, compare_record
-from .preprocess import BLANK_CHECKED_FIELDS, PRE_HEADERS, QUERY_FIELDS, check_records, format_flags
+from .preprocess import BLANK_CHECKED_FIELDS, PRE_HEADERS, QUERY_FIELDS, check_records
 
 CANONICAL_FIELDS = [
     "ID",
@@ -74,13 +76,13 @@ RESULT_ATTRIBUTES = {
     "LATITUDE": "latitude",
     "LONGITUDE": "longitude",
 }
-META_HEADERS = [
-    "GEOCODER_API",
-    "MATCH_TYPE",
-    "ACCURACY",
-    "LOCATION_TYPE",
-    "MATCH_NOTES",
-]
+META_ATTRIBUTES = {
+    "MATCH_TYPE": "match_type",
+    "ACCURACY": "accuracy",
+    "LOCATION_TYPE": "location_type",
+    "MATCH_NOTES": "match_notes",
+}
+META_HEADERS = ["GEOCODER_API"] + list(META_ATTRIBUTES)
 DEBUG_HEADER = "RAW_MATCH"
 
 NO_API = "none"
@@ -263,7 +265,7 @@ def build_headers(options: Options, include_results: bool) -> List[str]:
 def result_cells(result: GeocodeResult, api_name: str) -> List:
     """Renders the result and match-metadata cells of one row."""
     values = [getattr(result, RESULT_ATTRIBUTES[field_name]) for field_name in CANONICAL_FIELDS]
-    return values + [api_name, result.match_type, result.accuracy, result.location_type, result.match_notes]
+    return values + [api_name] + [getattr(result, attribute) for attribute in META_ATTRIBUTES.values()]
 
 
 def count_flags(counts: Dict[str, int], flags: List[Dict[str, str]]) -> None:
@@ -361,7 +363,7 @@ def write_output_sheet(
     for index, (record, result) in enumerate(zip(records, results if results is not None else blanks)):
         row = [getattr(record, field_name.lower()) for field_name in CANONICAL_FIELDS]
         if options.preprocess:
-            row += format_flags(flags[index])
+            row.append(format_flags(flags[index]))
         if result is not None:
             row += result_cells(result, api_name)
             if options.compare:
@@ -446,9 +448,14 @@ def process_workbook(
     output.save(outfile)
 
 
-def detect_output_columns(header_cells) -> Tuple[Dict[str, int], Dict[str, int]]:
+def locate_headers(labels: List[str], wanted: Dict[str, str]) -> Dict[str, int]:
+    """Maps each wanted field to the column its header occupies, where it has one."""
+    return {field_name: labels.index(label) for field_name, label in wanted.items() if label in labels}
+
+
+def detect_output_columns(header_cells) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int]]:
     """
-    Locates the SOURCE_ and RESULT_ columns of a workbook this tool wrote.
+    Locates the source, result, and match-metadata columns this tool wrote.
 
     Parameters
     ----------
@@ -457,19 +464,28 @@ def detect_output_columns(header_cells) -> Tuple[Dict[str, int], Dict[str, int]]
 
     Return
     ----------
-    maps : Tuple[Dict[str, int], Dict[str, int]]
-        The canonical fields found under each prefix, mapped to their columns.
+    maps : Tuple[Dict[str, int], Dict[str, int], Dict[str, int]]
+        The canonical fields found under each result prefix and the metadata
+        fields found beside them, each mapped to their columns.
     """
     labels = [clean_cell(value).upper() for value in header_cells]
-    return tuple(
-        {field_name: labels.index(f"{prefix}_{field_name}") for field_name in CANONICAL_FIELDS if f"{prefix}_{field_name}" in labels}
-        for prefix in ["SOURCE", "RESULT"]
-    )
+    source = locate_headers(labels, {name: f"SOURCE_{name}" for name in CANONICAL_FIELDS})
+    result = locate_headers(labels, {name: f"RESULT_{name}" for name in CANONICAL_FIELDS})
+    return source, result, locate_headers(labels, {name: name for name in META_ATTRIBUTES})
 
 
-def read_output_row(row, index: int, source_map: Dict[str, int], result_map: Dict[str, int]) -> Tuple[SourceRecord, GeocodeResult]:
+def read_output_row(
+    row, index: int, source_map: Dict[str, int], result_map: Dict[str, int], meta_map: Dict[str, int]
+) -> Tuple[SourceRecord, GeocodeResult]:
     """
     Rebuilds the source record and geocoded result a written row was made from.
+
+    The match metadata is read back alongside the result fields, because the
+    comparison judges a result partly on what the provider said about it: a
+    rebuilt result left at its defaults would be graded as freshly accurate
+    however coarsely the provider had resolved it. Accuracy is the one metadata
+    cell held as a number, and a sheet that lacks the column, or carries a
+    blank, leaves it at the score no match scores.
 
     Parameters
     ----------
@@ -481,6 +497,8 @@ def read_output_row(row, index: int, source_map: Dict[str, int], result_map: Dic
         Each canonical field mapped to its SOURCE_ column.
     result_map : Dict[str, int]
         Each canonical field mapped to its RESULT_ column.
+    meta_map : Dict[str, int]
+        Each match-metadata field mapped to its column.
 
     Return
     ----------
@@ -488,8 +506,12 @@ def read_output_row(row, index: int, source_map: Dict[str, int], result_map: Dic
         The two sides of the row, ready to be compared.
     """
     record = SourceRecord(internal_key=index, **{name.lower(): cell_value(row, source_map.get(name)) for name in CANONICAL_FIELDS})
-    result = GeocodeResult(**{RESULT_ATTRIBUTES[name]: cell_value(row, column) for name, column in result_map.items()})
-    return record, result
+
+    values = {RESULT_ATTRIBUTES[name]: cell_value(row, column) for name, column in result_map.items()}
+    values.update({META_ATTRIBUTES[name]: cell_value(row, column) for name, column in meta_map.items()})
+    accuracy = values.get("accuracy", "")
+    values["accuracy"] = int(accuracy) if accuracy.isdigit() else AccuracyLevel.NONE
+    return record, GeocodeResult(**values)
 
 
 def extend_headers(header: List[str], names: List[str]) -> Dict[str, int]:
@@ -528,7 +550,7 @@ def checked_headers(options: Options) -> List[str]:
 
 def check_cells(record: SourceRecord, result: GeocodeResult, flags: Dict[str, str], options: Options) -> List:
     """Renders the pre-check and comparison cells requested for one row."""
-    cells = format_flags(flags) if options.preprocess else []
+    cells = [format_flags(flags)] if options.preprocess else []
     return cells + (compare_record(record, result) if options.compare else [])
 
 
@@ -555,14 +577,14 @@ def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[Lis
         them, or None when the sheet holds no output of this tool to check.
     """
     header = [clean_cell(value) for value in next(rows, ())]
-    source_map, result_map = detect_output_columns(header)
+    source_map, result_map, meta_map = detect_output_columns(header)
     if not source_map or (options.compare and not result_map):
         wanted = "RESULT_" if source_map else "SOURCE_"
         print(f"skipping sheet '{sheet_name}': no {wanted} columns to check")
         return None
 
     data = [list(row) for row in rows if any(clean_cell(value) for value in row)]
-    pairs = [read_output_row(row, index, source_map, result_map) for index, row in enumerate(data)]
+    pairs = [read_output_row(row, index, source_map, result_map, meta_map) for index, row in enumerate(data)]
     flags = check_records([record for record, _ in pairs], blank_fields(source_map, sheet_name)) if options.preprocess else []
     columns = extend_headers(header, checked_headers(options))
 

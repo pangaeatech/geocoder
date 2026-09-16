@@ -13,6 +13,7 @@ import re
 from typing import Dict, List, Optional, Set, Tuple
 
 from .api import AccuracyLevel, GeocodeResult, SourceRecord
+from .flags import format_flags
 from .regions import COUNTRY_CODE_NAMES, SUBDIVISION_NAMES
 from .text import words
 
@@ -357,7 +358,8 @@ def compare_record(record: SourceRecord, result: GeocodeResult) -> List:
     ----------
     List
         One grade per compared field, the house-number grade, the coordinate
-        offsets, the worst grade of the row, and the flags the result raised.
+        offsets, the worst grade of the row, and the flags the result raised,
+        each with the note explaining it.
     """
     grades = {
         name: compare_values(getattr(record, name.lower()), getattr(result, f"result_{name.lower()}"), FIELD_CODE_NAMES.get(name))
@@ -367,4 +369,4 @@ def compare_record(record: SourceRecord, result: GeocodeResult) -> List:
 
     offsets = compare_coordinates(record, result)
     flags = flag_result(result, grades, offsets[-1])
-    return list(grades.values()) + offsets + [summarize_grades(list(grades.values())), ", ".join(flags)]
+    return list(grades.values()) + offsets + [summarize_grades(list(grades.values())), format_flags(flags)]

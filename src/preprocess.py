@@ -8,6 +8,7 @@ Geocoder — source record pre-processing
 Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
+import math
 import re
 from typing import Callable, Dict, List, Optional
 
@@ -115,9 +116,15 @@ STREET_NUMBER_EXEMPT_FLAGS = {
 
 
 def _check_placeholder(record: SourceRecord) -> Dict[str, str]:
-    """Flags an address whose text is a stand-in rather than a real location."""
-    normalized = " ".join(words(record.address))
-    if normalized and normalized in PLACEHOLDER_VALUES:
+    """
+    Flags an address whose text is a stand-in rather than a real location.
+
+    Folding the text down to bare words is what lets "N/A" and "n a" read as
+    the one stand-in, but it empties an address written as a single mark, so a
+    value that folds away to nothing is matched as it was typed instead.
+    """
+    normalized = " ".join(words(record.address)) or record.address.strip()
+    if normalized in PLACEHOLDER_VALUES:
         return {"PLACEHOLDER": record.address}
     return {}
 
@@ -275,6 +282,8 @@ def _check_postalcode(record: SourceRecord) -> Dict[str, str]:
 
 def _coordinate_problem(latitude: float, longitude: float) -> str:
     """Names what is wrong with a parsed coordinate pair, or a blank when nothing is."""
+    if not math.isfinite(latitude) or not math.isfinite(longitude):
+        return f"{latitude}, {longitude} is not a finite coordinate"
     if abs(latitude) > 90 or abs(longitude) > 180:
         return f"{latitude}, {longitude} is outside the globe"
     return "null island" if latitude == 0 and longitude == 0 else ""
@@ -381,7 +390,9 @@ def check_records(records: List[SourceRecord], blank_fields: Optional[List[str]]
     place: several tenants of one building legitimately share an address, and
     that is worth knowing without being called a repeated row. A row whose
     address is blank or a placeholder is counted as neither: it has nothing to
-    be a duplicate of, and its own flags already say so.
+    be a duplicate of, and its own flags already say so. A row that carries no
+    name is the same case seen from the other side — nothing establishes it as
+    the same place as its neighbour — so it can only be said to share.
 
     Parameters
     ----------
@@ -400,7 +411,7 @@ def check_records(records: List[SourceRecord], blank_fields: Optional[List[str]]
     usable = [not record_flags.keys() & UNUSABLE_ADDRESS_FLAGS for record_flags in flags]
     addresses = [_address_key(record) if keep else "" for record, keep in zip(records, usable)]
     names = [" ".join(words(record.name)) for record in records]
-    rows = [f"{name}|{address}" if address else "" for name, address in zip(names, addresses)]
+    rows = [f"{name}|{address}" if name and address else "" for name, address in zip(names, addresses)]
 
     address_counts = _count_keys(addresses)
     row_counts = _count_keys(rows)
@@ -413,25 +424,3 @@ def check_records(records: List[SourceRecord], blank_fields: Optional[List[str]]
         elif shared > 0:
             record_flags[SHARED_ADDRESS_FLAG] = f"address is shared with {shared} other row(s)"
     return flags
-
-
-def format_flags(flags: Dict[str, str]) -> List[str]:
-    """
-    Renders one record's flags as the cells of the PRE_ section.
-
-    Each flag is written on its own, followed by its note where it has one, so
-    that the whole of what a check found stays in one place: a reader scanning
-    the column sees the flag names, and searching for one finds its detail
-    alongside rather than in a second column that is blank as often as not.
-
-    Parameters
-    ----------
-    flags : Dict[str, str]
-        The flags raised for a record, mapped to their notes.
-
-    Return
-    ----------
-    cells : List[str]
-        One cell per PRE_ header, holding every flag and the notes it carries.
-    """
-    return ["; ".join(f"{name}: {note}" if note else name for name, note in flags.items())]

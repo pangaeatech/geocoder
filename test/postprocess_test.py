@@ -169,6 +169,13 @@ def test_flag_result_reports_distant_and_coarse_results():
     assert flags["FAR_FROM_SOURCE"] == "4.2 km from the source coordinates"
 
 
+def test_compare_record_writes_the_flag_notes_into_its_cell():
+    """The POST_FLAGS cell carries each flag's note, not just the flag's name."""
+    record = SourceRecord(internal_key=0, address="1 Main St", latitude="40.0", longitude="-75.0")
+    result = GeocodeResult(result_address="1 Main St", latitude="40.1", longitude="-75.0", accuracy=40)
+    assert compare_record(record, result)[-1] == "LOW_ACCURACY: resolved no finer than city; FAR_FROM_SOURCE: 11.1 km from the source coordinates"
+
+
 def test_compare_record_expands_codes_per_field():
     """Each field is compared against the codes that field is written in."""
     record = SourceRecord(internal_key=0, stateprov="Texas", country="United States")

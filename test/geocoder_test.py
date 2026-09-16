@@ -50,6 +50,17 @@ class MockProvider(Provider):
         return results
 
 
+class CoarseProvider(MockProvider):
+    """In-test provider whose matches resolve no finer than the city they sit in."""
+
+    def geocode(self, records):
+        """Returns the mock results, downgraded to a city-level accuracy."""
+        results = super().geocode(records)
+        for result in results:
+            result.accuracy = api.AccuracyLevel.CITY
+        return results
+
+
 def _make_workbook(path, sheets):
     """
     Writes a temporary workbook for a test.
@@ -398,6 +409,24 @@ def test_compare_recheck_adds_columns_to_written_output(tmp_path):
     assert values["MATCH_ADDRESS"] == "EXACT"
     assert values["MATCH_STATEPROV"] == "EXACT"
     assert values["GEOCODER_API"] == "mock"
+
+
+def test_compare_recheck_reads_back_the_recorded_accuracy(tmp_path):
+    """A rechecked row is flagged on the accuracy the provider recorded, not a default."""
+    infile = tmp_path / "in.xlsx"
+    geocoded = tmp_path / "geocoded.xlsx"
+    rechecked = tmp_path / "rechecked.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 Main St", "Anytown", "CA"]]})
+    process_workbook(str(infile), str(geocoded), CoarseProvider(), options=Options(compare=True))
+
+    main([str(geocoded), str(rechecked), "--api", "none", "--compare"])
+
+    before = openpyxl.load_workbook(geocoded)["S"]
+    after = openpyxl.load_workbook(rechecked)["S"]
+    original = dict(zip([cell.value for cell in before[1]], [cell.value for cell in before[2]]))
+    refreshed = dict(zip([cell.value for cell in after[1]], [cell.value for cell in after[2]]))
+    assert original["POST_FLAGS"] == "LOW_ACCURACY: resolved no finer than city"
+    assert refreshed["POST_FLAGS"] == original["POST_FLAGS"]
 
 
 def test_compare_recheck_refreshes_existing_columns(tmp_path):
