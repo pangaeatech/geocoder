@@ -38,9 +38,10 @@ class GoogleProvider(Provider):
     punctuate their parts differently from North American ones.
 
     Rows whose address or city holds a Canadian legal land description are
-    queried without it: Google reads such a grid reference as a street
-    address and matches it to an unrelated road, so only the surrounding
-    province is sent and the result is capped there.
+    queried without it: Google reads such a grid reference as a street address
+    and matches it to an unrelated road. Whatever ordinary place name the row
+    also carries is still sent, but the result is capped at the province the
+    parcel sits in.
     """
 
     requires_key = True

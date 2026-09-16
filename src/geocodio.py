@@ -32,7 +32,10 @@ class GeocodioProvider(Provider):
     so grading the fields alone would report those coarser matches as rooftop
     precision. Each accuracy_type therefore caps the graded score at the
     precision it actually represents, and a match resolved to a street with no
-    house number is capped lower still.
+    house number is capped lower still. The mapped types are every accuracy_type
+    forward geocoding reports; ``nearest_street`` and ``nearest_place`` are
+    documented for reverse geocoding alone, and a postal code arrives as
+    ``place`` rather than as a type of its own.
 
     Street addresses are assembled from the response components in the
     convention of the country they belong to. Geocodio's own ``address_lines``
@@ -40,9 +43,10 @@ class GeocodioProvider(Provider):
     which is the wrong order for Mexican addresses.
 
     Rows whose address or city holds a Canadian legal land description are
-    queried without it: Geocodio reads such a grid reference as a street
-    address and matches it to an unrelated road, so only the surrounding
-    province is sent and the result is capped there.
+    queried without it: Geocodio reads such a grid reference as a street address
+    and matches it to an unrelated road. Whatever ordinary place name the row
+    also carries is still sent, but the result is capped at the province the
+    parcel sits in.
     """
 
     requires_key = True

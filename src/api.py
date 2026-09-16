@@ -97,12 +97,18 @@ class SourceRecord:
         """
         Joins the non-blank address components into a single query string.
 
-        Any legal land description is stripped from the street and city, so a rig
-        row is queried by the province it sits in rather than by a grid reference.
+        Any legal land description is stripped from the street and city, leaving
+        a rig row to be queried by whatever ordinary place name it still carries
+        — the nearest town it names locates it far better than its province
+        alone. The postal code is withheld from such a row: a parcel on a survey
+        grid has none of its own, so that field holds the operator's code or a
+        transcription error, and with the result capped at the province it can
+        only pull the match away from the parcel.
         """
         street = strip_legal_land_description(self.address)
         city = strip_legal_land_description(self.city)
-        parts = [street, city, self.stateprov, self.postalcode, self.country]
+        postalcode = "" if self.has_legal_land_description() else self.postalcode
+        parts = [street, city, self.stateprov, postalcode, self.country]
         return ", ".join(part for part in parts if part)
 
     def has_legal_land_description(self) -> bool:
@@ -196,9 +202,9 @@ def apply_legal_land_limit(record: SourceRecord, result: GeocodeResult) -> Geoco
     Bounds a result at the precision its source row could support.
 
     A row carrying a legal land description is queried without it, so the
-    provider only ever saw the surrounding province. The score is capped there
-    and annotated, rather than reporting a coincidental street-level answer as
-    the rig's location.
+    provider never saw the parcel itself — only the town or province around it.
+    The score is capped at the province and annotated, rather than reporting a
+    coincidental street-level answer as the rig's location.
 
     Parameters
     ----------

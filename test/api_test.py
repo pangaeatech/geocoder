@@ -190,6 +190,13 @@ def test_address_string_withholds_a_legal_land_description_in_the_city():
     assert record.has_legal_land_description() is True
 
 
+def test_address_string_withholds_the_postal_code_of_a_legal_land_row():
+    """A rig row keeps the town it names but not the postal code filed beside the grid reference."""
+    record = SourceRecord(internal_key=0, address="7-24-35-2 W5m", city="Spruce View", stateprov="Alberta", postalcode="T0M1V0", country="Canada")
+
+    assert record.address_string() == "Spruce View, Alberta, Canada"
+
+
 def test_address_string_keeps_an_ordinary_address():
     """A row without a grid reference is queried exactly as it was entered."""
     record = SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW", city="Washington", stateprov="DC", postalcode="20500")
