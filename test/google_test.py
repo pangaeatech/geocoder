@@ -8,25 +8,13 @@ Geocoder Google Provider Tests
 Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
+from test.helpers import FakeResponse, assert_white_house
+
 import pytest
 
 from src import google
 from src.api import PROVIDERS, SourceRecord
 from src.cache import Cache, normalize_query
-
-
-class _FakeResponse:
-    """Stands in for a requests.Response so provider tests avoid the network."""
-
-    def __init__(self, payload):
-        self._payload = payload
-
-    def raise_for_status(self):
-        """Mimics a successful response by never raising."""
-
-    def json(self):
-        """Returns the canned decoded payload."""
-        return self._payload
 
 
 def _result(location_type, components, **overrides):
@@ -85,7 +73,7 @@ def _patch_response(monkeypatch, payload, captured=None):
     def fake_get(url, params=None, timeout=None):
         if captured is not None:
             captured.update(url=url, params=params, timeout=timeout)
-        return _FakeResponse(payload)
+        return FakeResponse(payload)
 
     monkeypatch.setattr(google.requests, "get", fake_get)
 
@@ -113,13 +101,7 @@ def test_google_parses_rooftop(monkeypatch):
     assert captured["params"]["address"] == record.address_string()
     assert result.match_type == "exact"
     assert result.location_type == "ROOFTOP"
-    assert result.result_address == "1600 Pennsylvania Ave NW"
-    assert result.result_city == "Washington"
-    assert result.result_stateprov == "DC"
-    assert result.result_postalcode == "20500"
-    assert result.result_country == "US"
-    assert result.latitude == "38.898754"
-    assert result.longitude == "-77.03535"
+    assert_white_house(result)
     assert result.result_id == "PLACE"
     assert result.accuracy == 100
 

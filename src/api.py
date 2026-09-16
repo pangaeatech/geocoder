@@ -127,6 +127,54 @@ def grade_accuracy(result: GeocodeResult, cap: Optional[int] = None) -> int:
     return AccuracyLevel.NONE
 
 
+ROUTE_FIRST_COUNTRIES = {"MX"}
+
+
+def format_street_address(country: str, street: str, number: str = "", subpremise: str = "", sublocality: str = "") -> str:
+    """
+    Assembles a street line in the convention of the country it belongs to.
+
+    Most countries lead with the street number, but those in
+    ROUTE_FIRST_COUNTRIES place it after the street, hyphenate any subpremise
+    onto it, and append the sublocality, because a street number there is only
+    unique within its sublocality.
+
+    A street with no number still yields an address, since the street name alone
+    locates the row to that street; the caller's accuracy cap grades such a
+    result no higher than street level.
+
+    Parameters
+    ----------
+    country : str
+        The country code of the match, which selects the convention to follow.
+    street : str
+        The street name; a match without one yields no address.
+    number : str
+        The house number, when the match carries one.
+    subpremise : str
+        The unit within the premise, when the match carries one.
+    sublocality : str
+        The neighbourhood the house number is unique within, when the provider
+        reports one.
+
+    Return
+    ----------
+    str
+        The assembled street line, or an empty string without a street.
+    """
+    if not street:
+        return ""
+
+    if country not in ROUTE_FIRST_COUNTRIES:
+        return f"{number} {street}" if number else street
+
+    if number and subpremise:
+        number = f"{number}-{subpremise}"
+
+    address = f"{street} {number}" if number else street
+    return f"{address}, {sublocality}" if sublocality else address
+
+
 PROVIDERS: Dict[str, Type["Provider"]] = {}
 
 
