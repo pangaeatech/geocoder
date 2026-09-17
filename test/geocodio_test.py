@@ -13,7 +13,7 @@ from test.helpers import FakeResponse, assert_white_house
 import pytest
 
 from src import geocodio
-from src.api import PROVIDERS, SourceRecord
+from src.api import LEGAL_LAND_NOTE, NO_ADDRESS_NOTE, PROVIDERS, SourceRecord
 
 
 def _candidate(accuracy_type, components, **overrides):
@@ -48,6 +48,11 @@ PLACE_COMPONENTS = {
     "city": "Pendleton",
     "state": "SC",
     "country": "US",
+}
+
+PROVINCE_COMPONENTS = {
+    "state": "AB",
+    "country": "CA",
 }
 
 MEXICO_COMPONENTS = {
@@ -245,3 +250,44 @@ def test_geocodio_raises_on_entry_count_mismatch(monkeypatch):
     ]
     with pytest.raises(ValueError):
         geocodio.GeocodioProvider("key").geocode(records)
+
+
+def test_geocodio_withholds_legal_land_description(monkeypatch):
+    """A rig row asks Geocodio only for its province and is capped there."""
+    captured = {}
+    _patch_response(monkeypatch, _batch([_candidate("state", PROVINCE_COMPONENTS)]), captured)
+
+    record = SourceRecord(internal_key=0, address="02-16-066-15w5", stateprov="Alberta", country="Canada")
+    result = geocodio.GeocodioProvider("key").geocode([record])[0]
+
+    assert captured["json"] == ["Alberta, Canada"]
+    assert result.result_stateprov == "AB"
+    assert result.accuracy == 20
+
+
+def test_geocodio_caps_legal_land_description_at_the_province(monkeypatch):
+    """A rooftop answer for a rig row is still capped at the province."""
+    _patch_response(monkeypatch, _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)]))
+
+    record = SourceRecord(internal_key=0, address="01-17-040-06w4", city="02-16-066-15w5", stateprov="Alberta")
+    result = geocodio.GeocodioProvider("key").geocode([record])[0]
+
+    assert result.accuracy == 20
+    assert result.match_notes == LEGAL_LAND_NOTE
+
+
+def test_geocodio_keeps_a_row_left_with_no_address_out_of_the_batch(monkeypatch):
+    """A row that is nothing but a grid reference is dropped from the batch, not misaligned."""
+    captured = {}
+    _patch_response(monkeypatch, _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)]), captured)
+
+    records = [
+        SourceRecord(internal_key=0, address="01-17-040-06w4"),
+        SourceRecord(internal_key=1, address="1600 Pennsylvania Ave NW"),
+    ]
+    results = geocodio.GeocodioProvider("key").geocode(records)
+
+    assert captured["json"] == ["1600 Pennsylvania Ave NW"]
+    assert results[0].match_notes == f"{NO_ADDRESS_NOTE}; {LEGAL_LAND_NOTE}"
+    assert results[0].accuracy == 0
+    assert results[1].accuracy == 100
