@@ -12,7 +12,7 @@ from typing import Dict, List
 
 import requests
 
-from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, format_street_address, grade_accuracy, register
+from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, apply_legal_land_limit, format_street_address, grade_accuracy, register
 
 
 @register("geocodio")
@@ -32,12 +32,21 @@ class GeocodioProvider(Provider):
     so grading the fields alone would report those coarser matches as rooftop
     precision. Each accuracy_type therefore caps the graded score at the
     precision it actually represents, and a match resolved to a street with no
-    house number is capped lower still.
+    house number is capped lower still. The mapped types are every accuracy_type
+    forward geocoding reports; ``nearest_street`` and ``nearest_place`` are
+    documented for reverse geocoding alone, and a postal code arrives as
+    ``place`` rather than as a type of its own.
 
     Street addresses are assembled from the response components in the
     convention of the country they belong to. Geocodio's own ``address_lines``
     are not used: it writes that line house number first for every country,
     which is the wrong order for Mexican addresses.
+
+    Rows whose address or city holds a Canadian legal land description are
+    queried without it: Geocodio reads such a grid reference as a street address
+    and matches it to an unrelated road. Whatever ordinary place name the row
+    also carries is still sent, but the result is capped at the province the
+    parcel sits in.
     """
 
     requires_key = True
@@ -75,10 +84,12 @@ class GeocodioProvider(Provider):
             One result per input record, aligned by position.
         """
         results_by_key: Dict[int, GeocodeResult] = {}
-        for start in range(0, len(records), self.BATCH_SIZE):
-            self._geocode_batch(records[start : start + self.BATCH_SIZE], results_by_key)
+        queryable = [record for record in records if record.address_string()]
+        for start in range(0, len(queryable), self.BATCH_SIZE):
+            self._geocode_batch(queryable[start : start + self.BATCH_SIZE], results_by_key)
 
-        return [results_by_key.get(record.internal_key, GeocodeResult(match_notes="No match")) for record in records]
+        results = [results_by_key.get(record.internal_key, self.unqueryable_result()) for record in records]
+        return [apply_legal_land_limit(record, result) for record, result in zip(records, results)]
 
     def _geocode_batch(self, batch: List[SourceRecord], results_by_key: Dict[int, GeocodeResult]) -> None:
         """Posts one batch, verifies its entry count, and stores each result by internal key."""
