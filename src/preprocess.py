@@ -46,7 +46,7 @@ RURAL_ROUTE_RE = re.compile(r"\b(?:r\.?\s*r\.?|rural\s+route|h\.?\s*c\.?\s*r?|hi
 
 INTERSECTION_RE = re.compile(r"\bcorner\s+(?:of|at)\b|\bintersection\s+of\b|\s&\s|\s/\s", re.IGNORECASE)
 
-ADDRESS_RANGE_RE = re.compile(r"^\d+\s*[-–]\s*\d+\s+\S")
+ADDRESS_RANGE_RE = re.compile(r"^\d+\s*[-–]\s*\d+(?=\s+\S)")
 
 ADDRESS_DIGIT_RE = re.compile(r"\d")
 

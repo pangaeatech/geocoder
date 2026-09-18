@@ -378,12 +378,12 @@ def test_compare_adds_match_columns(tmp_path):
 
 
 def test_api_none_writes_source_and_flags_only(tmp_path):
-    """--api none stops after pre-processing and writes no result columns."""
+    """--api none --preProcess stops after the pre-checks and writes no result columns."""
     infile = tmp_path / "in.xlsx"
     outfile = tmp_path / "out.xlsx"
     _make_workbook(infile, {"S": [["Address", "City", "State"], ["PO Box 12", "Anytown", "CA"]]})
 
-    main([str(infile), str(outfile), "--api", "none"])
+    main([str(infile), str(outfile), "--api", "none", "--preProcess"])
 
     sheet = openpyxl.load_workbook(outfile)["S"]
     header = [cell.value for cell in sheet[1]]
@@ -445,13 +445,72 @@ def test_compare_recheck_refreshes_existing_columns(tmp_path):
     assert header == [cell.value for cell in openpyxl.load_workbook(geocoded)["S"][1]]
 
 
-def test_compare_recheck_rejects_a_source_workbook(tmp_path):
-    """A workbook that was never geocoded has no results to grade, so it exits."""
+def test_compare_drops_itself_on_a_source_workbook(tmp_path, capsys):
+    """A workbook that was never geocoded has no results to grade, so the grades are dropped."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+
+    main([str(infile), str(outfile), "--api", "none", "--compare", "--preProcess"])
+
+    header = [cell.value for cell in openpyxl.load_workbook(outfile)["S"][1]]
+    assert header == geocoder.SOURCE_HEADERS + preprocess.PRE_HEADERS
+    assert "MATCH_ columns not written" in capsys.readouterr().out
+
+
+def test_compare_drops_itself_on_output_holding_no_results(tmp_path, capsys):
+    """Output written without result columns is still pre-checked, without grades."""
+    infile = tmp_path / "in.xlsx"
+    written = tmp_path / "written.xlsx"
+    rechecked = tmp_path / "rechecked.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["PO Box 12", "Town", "CA"]]})
+    main([str(infile), str(written), "--api", "none", "--preProcess"])
+
+    main([str(written), str(rechecked), "--api", "none", "--compare", "--preProcess"])
+
+    header = [cell.value for cell in openpyxl.load_workbook(rechecked)["S"][1]]
+    assert header == geocoder.SOURCE_HEADERS + preprocess.PRE_HEADERS
+    assert "no RESULT_ columns" in capsys.readouterr().out
+
+
+def test_preprocess_refreshes_written_output_on_its_own(tmp_path):
+    """--api none --preProcess re-flags a workbook this tool wrote, leaving its cells alone."""
+    infile = tmp_path / "in.xlsx"
+    geocoded = tmp_path / "geocoded.xlsx"
+    rechecked = tmp_path / "rechecked.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["PO Box 12", "Town", "CA"]]})
+    process_workbook(str(infile), str(geocoded), MockProvider())
+
+    main([str(geocoded), str(rechecked), "--api", "none", "--preProcess"])
+
+    sheet = openpyxl.load_workbook(rechecked)["S"]
+    header = [cell.value for cell in sheet[1]]
+    assert header == geocoder.SOURCE_HEADERS + geocoder.RESULT_HEADERS + geocoder.META_HEADERS + preprocess.PRE_HEADERS
+    assert "PO_BOX" in sheet[2][header.index("PRE_FLAGS")].value
+
+
+def test_recheck_does_not_flag_a_column_the_source_never_had(tmp_path):
+    """A SOURCE_ column empty on every row is reported once, not flagged on each row."""
+    infile = tmp_path / "in.xlsx"
+    written = tmp_path / "written.xlsx"
+    rechecked = tmp_path / "rechecked.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["PO Box 12", "Town", "CA"]]})
+    main([str(infile), str(written), "--api", "none", "--preProcess"])
+
+    main([str(written), str(rechecked), "--api", "none", "--preProcess"])
+
+    sheet = openpyxl.load_workbook(rechecked)["S"]
+    header = [cell.value for cell in sheet[1]]
+    assert sheet[2][header.index("PRE_FLAGS")].value == "PO_BOX: PO Box"
+
+
+def test_api_none_without_a_check_has_nothing_to_do(tmp_path):
+    """Naming no provider and no check asks for no work at all, so it exits."""
     infile = tmp_path / "in.xlsx"
     _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
 
     with pytest.raises(SystemExit):
-        main([str(infile), str(tmp_path / "out.xlsx"), "--api", "none", "--compare"])
+        main([str(infile), str(tmp_path / "out.xlsx"), "--api", "none"])
 
 
 def test_recheck_worksheet_selection(tmp_path):
@@ -548,7 +607,7 @@ def test_output_sheet_is_left_ready_to_triage(tmp_path):
     outfile = tmp_path / "out.xlsx"
     _make_workbook(infile, {"Sheet1": [["Address", "City", "State"], ["PO Box 12", "Anytown", "CA"]]})
 
-    main([str(infile), str(outfile), "--api", "none"])
+    main([str(infile), str(outfile), "--api", "none", "--preProcess"])
 
     sheet = openpyxl.load_workbook(outfile)["Sheet1"]
     assert sheet.freeze_panes == "A2"
@@ -571,6 +630,6 @@ def test_preprocess_run_reports_its_flag_counts(tmp_path, capsys):
         },
     )
 
-    main([str(infile), str(outfile), "--api", "none"])
+    main([str(infile), str(outfile), "--api", "none", "--preProcess"])
 
     assert "      2  PO_BOX" in capsys.readouterr().out
