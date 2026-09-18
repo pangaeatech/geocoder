@@ -87,6 +87,11 @@ DEBUG_HEADER = "RAW_MATCH"
 
 NO_API = "none"
 
+NOTHING_TO_WRITE = (
+    "error: nothing to write; --compare grades results against their source, and this workbook holds none. "
+    f"Geocode it first (--api census --preProcess), then --api {NO_API} --compare the file that produces."
+)
+
 
 @dataclass
 class Options:
@@ -388,8 +393,8 @@ def process_workbook(
     Every worksheet is processed unless a single worksheet is named. Sheets missing
     any required column are skipped with a message written to stdout. A None
     provider halts each sheet after its pre-checks and calls no API at all, so a
-    comparison it has no results for is reported and dropped rather than graded
-    against an empty result.
+    comparison it has no results for is dropped rather than graded against an
+    empty result, and a run left with no check to write at all is refused.
 
     Parameters
     ----------
@@ -407,10 +412,13 @@ def process_workbook(
     Raises
     ----------
     SystemExit
-        If the named worksheet is missing, or no sheet had the required columns.
+        If the named worksheet is missing, no sheet had the required columns, or
+        the run was left with nothing to write.
     """
     options = options or Options()
     if options.compare and provider is None:
+        if not options.preprocess:
+            raise SystemExit(NOTHING_TO_WRITE)
         print("no results to compare against; MATCH_ columns not written")
 
     source = load_workbook(infile, read_only=True, data_only=True)
@@ -588,7 +596,8 @@ def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[Lis
 
     Every original cell is kept, so the provider columns, the raw match, and any
     earlier flags survive the round trip. A sheet holding no results keeps its
-    pre-checks; only the comparison is dropped, and it is reported.
+    pre-checks; only the comparison is dropped, and a sheet thereby left with no
+    check to write is passed over.
 
     Parameters
     ----------
@@ -614,6 +623,9 @@ def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[Lis
     if options.compare and not result_map:
         print(f"sheet '{sheet_name}': no RESULT_ columns; MATCH_ columns not written")
         options = replace(options, compare=False)
+
+    if not options.preprocess and not options.compare:
+        return None
 
     data = [list(row) for row in rows if any(clean_cell(value) for value in row)]
     pairs = [read_output_row(row, index, source_map, result_map, meta_map) for index, row in enumerate(data)]
@@ -677,7 +689,7 @@ def recheck_workbook(infile: str, outfile: str, worksheet: Optional[str] = None,
         source.close()
 
     if processed == 0:
-        raise SystemExit("error: no worksheets held geocoder output; nothing written")
+        raise SystemExit(NOTHING_TO_WRITE)
 
     report_flags(counts)
     output.save(outfile)

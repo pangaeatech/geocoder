@@ -504,6 +504,26 @@ def test_recheck_does_not_flag_a_column_the_source_never_had(tmp_path):
     assert sheet[2][header.index("PRE_FLAGS")].value == "PO_BOX: PO Box"
 
 
+def test_compare_refuses_a_source_workbook_it_cannot_grade(tmp_path):
+    """A comparison alone over rows nothing has geocoded writes nothing, so it exits."""
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+
+    with pytest.raises(SystemExit, match="nothing to write"):
+        main([str(infile), str(tmp_path / "out.xlsx"), "--api", "none", "--compare"])
+
+
+def test_compare_refuses_output_holding_no_results(tmp_path):
+    """A pre-checked workbook that was never geocoded still has no results to grade."""
+    infile = tmp_path / "in.xlsx"
+    flagged = tmp_path / "flagged.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["PO Box 12", "Town", "CA"]]})
+    main([str(infile), str(flagged), "--api", "none", "--preProcess"])
+
+    with pytest.raises(SystemExit, match="nothing to write"):
+        main([str(flagged), str(tmp_path / "out.xlsx"), "--api", "none", "--compare"])
+
+
 def test_api_none_without_a_check_has_nothing_to_do(tmp_path):
     """Naming no provider and no check asks for no work at all, so it exits."""
     infile = tmp_path / "in.xlsx"
