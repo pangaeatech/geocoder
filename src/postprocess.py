@@ -10,7 +10,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 
 import math
 import re
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from .api import AccuracyLevel, GeocodeResult, SourceRecord
 from .flags import format_flags
@@ -307,7 +307,7 @@ def summarize_grades(grades: List[str]) -> str:
     return max(grades, key=lambda grade: GRADE_SEVERITY.get(grade, 0), default="BLANK")
 
 
-def flag_result(result: GeocodeResult, grades: Dict[str, str], distance) -> Dict[str, str]:
+def flag_result(result: GeocodeResult, grades: Dict[str, str], distance: Union[float, str]) -> Dict[str, str]:
     """
     Flags the results whose own metadata says they are worth a second look.
 
@@ -336,9 +336,10 @@ def flag_result(result: GeocodeResult, grades: Dict[str, str], distance) -> Dict
 
     flags = {}
     if result.accuracy and result.accuracy < LOW_ACCURACY:
-        flags["LOW_ACCURACY"] = f"resolved no finer than {AccuracyLevel(result.accuracy).name.lower()}"
+        level = next((candidate for candidate in AccuracyLevel if candidate == result.accuracy), AccuracyLevel.NONE)
+        flags["LOW_ACCURACY"] = f"resolved no finer than {level.name.lower()}"
     flags.update({flag: "" for field_name, flag in CHANGE_FLAGS.items() if grades.get(field_name) in CHANGED_GRADES})
-    if distance != "" and distance > FAR_DISTANCE_M:
+    if isinstance(distance, float) and distance > FAR_DISTANCE_M:
         flags["FAR_FROM_SOURCE"] = f"{round(distance / 1000, 1)} km from the source coordinates"
     return flags
 

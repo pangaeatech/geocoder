@@ -12,7 +12,7 @@ import argparse
 import json
 import os
 from dataclasses import dataclass, replace
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from openpyxl import Workbook, load_workbook
 
@@ -126,7 +126,7 @@ def load_dotenv(path: str = ".env") -> None:
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
-def clean_cell(value) -> str:
+def clean_cell(value: object) -> str:
     """Converts the specified cell value into a trimmed string."""
     if value is None:
         return ""
@@ -134,12 +134,12 @@ def clean_cell(value) -> str:
     return str(value).strip()
 
 
-def cell_value(row, index: Optional[int]) -> str:
+def cell_value(row: Sequence[object], index: Optional[int]) -> str:
     """Reads one trimmed cell from a row, or a blank when the column is absent."""
     return clean_cell(row[index]) if index is not None and index < len(row) else ""
 
 
-def detect_columns(header_cells) -> Dict[str, int]:
+def detect_columns(header_cells: Iterable[object]) -> Dict[str, int]:
     """
     Maps canonical field names to their 0-based column index in the header row.
 
@@ -168,7 +168,7 @@ def detect_columns(header_cells) -> Dict[str, int]:
     return mapping
 
 
-def read_sheet_records(rows, column_map: Dict[str, int], sheet_name: str, country_per_sheet: bool) -> List[SourceRecord]:
+def read_sheet_records(rows: Iterable[Sequence[object]], column_map: Dict[str, int], sheet_name: str, country_per_sheet: bool) -> List[SourceRecord]:
     """
     Builds SourceRecords from the data rows of a worksheet.
 
@@ -191,7 +191,7 @@ def read_sheet_records(rows, column_map: Dict[str, int], sheet_name: str, countr
     records : List[SourceRecord]
         One record per non-blank data row.
     """
-    records = []
+    records: List[SourceRecord] = []
     for row in rows:
         values = {field_name: cell_value(row, column_map.get(field_name)) for field_name in CANONICAL_FIELDS}
 
@@ -301,7 +301,7 @@ def report_flags(counts: Dict[str, int]) -> None:
         print(f"  {count:>7}  {name}")
 
 
-def finish_sheet(worksheet) -> None:
+def finish_sheet(worksheet: Any) -> None:
     """
     Leaves a written sheet ready to triage: header frozen and filters armed.
 
@@ -429,7 +429,9 @@ def process_workbook(
         sheet_names = [worksheet] if worksheet else source.sheetnames
 
         output = Workbook()
-        output.remove(output.active)
+        active_sheet = output.active
+        assert active_sheet is not None
+        output.remove(active_sheet)
 
         counts: Dict[str, int] = {}
         processed = 0
@@ -466,7 +468,7 @@ def locate_headers(labels: List[str], wanted: Dict[str, str]) -> Dict[str, int]:
     return {field_name: labels.index(label) for field_name, label in wanted.items() if label in labels}
 
 
-def detect_output_columns(header_cells) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int]]:
+def detect_output_columns(header_cells: Iterable[object]) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int]]:
     """
     Locates the source, result, and match-metadata columns this tool wrote.
 
@@ -488,7 +490,7 @@ def detect_output_columns(header_cells) -> Tuple[Dict[str, int], Dict[str, int],
 
 
 def read_output_row(
-    row, index: int, source_map: Dict[str, int], result_map: Dict[str, int], meta_map: Dict[str, int]
+    row: Sequence[object], index: int, source_map: Dict[str, int], result_map: Dict[str, int], meta_map: Dict[str, int]
 ) -> Tuple[SourceRecord, GeocodeResult]:
     """
     Rebuilds the source record and geocoded result a written row was made from.
@@ -520,7 +522,7 @@ def read_output_row(
     """
     record = SourceRecord(internal_key=index, **{name.lower(): cell_value(row, source_map.get(name)) for name in CANONICAL_FIELDS})
 
-    values = {RESULT_ATTRIBUTES[name]: cell_value(row, column) for name, column in result_map.items()}
+    values: Dict[str, Any] = {RESULT_ATTRIBUTES[name]: cell_value(row, column) for name, column in result_map.items()}
     values.update({META_ATTRIBUTES[name]: cell_value(row, column) for name, column in meta_map.items()})
     accuracy = values.get("accuracy", "")
     values["accuracy"] = int(accuracy) if accuracy.isdigit() else AccuracyLevel.NONE
@@ -590,7 +592,9 @@ def check_cells(record: SourceRecord, result: GeocodeResult, flags: Dict[str, st
     return cells + (compare_record(record, result) if options.compare else [])
 
 
-def recheck_sheet(rows, sheet_name: str, options: Options) -> Optional[Tuple[List[str], List[List], List[Dict[str, str]]]]:
+def recheck_sheet(
+    rows: Iterator[Sequence[object]], sheet_name: str, options: Options
+) -> Optional[Tuple[List[str], List[List[object]], List[Dict[str, str]]]]:
     """
     Rebuilds one worksheet of written output with its check columns refreshed.
 
@@ -668,7 +672,9 @@ def recheck_workbook(infile: str, outfile: str, worksheet: Optional[str] = None,
             raise SystemExit(f"error: worksheet '{worksheet}' not found in {infile}")
 
         output = Workbook()
-        output.remove(output.active)
+        active_sheet = output.active
+        assert active_sheet is not None
+        output.remove(active_sheet)
 
         counts: Dict[str, int] = {}
         processed = 0
@@ -724,7 +730,7 @@ def holds_output(infile: str, worksheet: Optional[str]) -> bool:
         source.close()
 
 
-def parse_args(argv: Optional[List[str]] = None):
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     """Takes and parses the command-line arguments given by the user."""
     parser = argparse.ArgumentParser(description="Geocode address rows in an Excel workbook.")
 
@@ -774,7 +780,7 @@ def parse_args(argv: Optional[List[str]] = None):
     return parser.parse_args(argv)
 
 
-def select_provider(args) -> Optional[Provider]:
+def select_provider(args: argparse.Namespace) -> Optional[Provider]:
     """
     Builds the provider named on the command line, or None when it is 'none'.
 

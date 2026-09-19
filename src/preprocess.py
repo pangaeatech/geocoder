@@ -267,7 +267,7 @@ def _check_postalcode(record: SourceRecord) -> Dict[str, str]:
     nine-digit U.S. code is a ZIP+4 that lost its hyphen.
     """
     country = country_code(record.country)
-    pattern = POSTALCODE_PATTERNS.get(country)
+    pattern = POSTALCODE_PATTERNS.get(country or "")
     if not record.postalcode or not pattern or pattern.match(record.postalcode):
         return {}
 
@@ -314,7 +314,7 @@ def _check_coordinates(record: SourceRecord) -> Dict[str, str]:
 
     country = country_code(record.country)
     if not within_country(country, latitude, longitude):
-        return {"COORDINATES_OUTSIDE_COUNTRY": f"{latitude}, {longitude} is not in {COUNTRY_NAMES[country]}"}
+        return {"COORDINATES_OUTSIDE_COUNTRY": f"{latitude}, {longitude} is not in {COUNTRY_NAMES[country or '']}"}
     return {}
 
 

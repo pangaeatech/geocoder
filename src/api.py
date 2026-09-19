@@ -1,11 +1,8 @@
 #!/usr/bin/python3
 # -.- coding: utf-8 -.-
-# -.- dependencies: Python 3.8+ -.-
 
 """
 Geocoder — provider base and shared types
-
-Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
 import os
@@ -14,7 +11,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
 
 import requests
 
@@ -155,7 +152,9 @@ class AccuracyLevel(IntEnum):
     COUNTRY = (10, "result_country")
     NONE = (0, "")
 
-    def __new__(cls, score, field_name):
+    field: str
+
+    def __new__(cls, score: int, field_name: str) -> "AccuracyLevel":
         """Builds a member valued by its score and tagged with its source field."""
         member = int.__new__(cls, score)
         member._value_ = score
@@ -275,12 +274,13 @@ def format_street_address(country: str, street: str, number: str = "", subpremis
 
 
 PROVIDERS: Dict[str, Type["Provider"]] = {}
+T = TypeVar("T", bound="Provider")
 
 
-def register(name: str):
+def register(name: str) -> Callable[[Type[T]], Type[T]]:
     """Class decorator that registers a Provider subclass under the given name."""
 
-    def decorator(cls):
+    def decorator(cls: Type[T]) -> Type[T]:
         cls.name = name
         PROVIDERS[name] = cls
         return cls
@@ -333,7 +333,7 @@ class Provider(ABC):
         requests.RequestException
             If every attempt fails.
         """
-        last_error = None
+        last_error: Optional[requests.RequestException] = None
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
             try:
                 response = send()
@@ -343,6 +343,7 @@ class Provider(ABC):
                 last_error = error
                 if attempt < self.MAX_ATTEMPTS:
                     time.sleep(self.RETRY_BACKOFF * attempt)
+        assert last_error is not None
         raise last_error
 
 
