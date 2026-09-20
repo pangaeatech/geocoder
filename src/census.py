@@ -1,11 +1,8 @@
 #!/usr/bin/python3
 # -.- coding: utf-8 -.-
-# -.- dependencies: Python 3.8+ -.-
 
 """
 Geocoder — U.S. Census Bureau provider
-
-Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
 import csv

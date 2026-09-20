@@ -1,11 +1,8 @@
 #!/usr/bin/python3
 # -.- coding: utf-8 -.-
-# -.- dependencies: Python 3.8+ -.-
 
 """
 Geocoder Google Provider Tests
-
-Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
 from test.helpers import FakeResponse, assert_white_house
