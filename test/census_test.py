@@ -161,24 +161,10 @@ def test_census_raises_on_row_count_mismatch(monkeypatch):
         census.CensusProvider().geocode(records)
 
 
-def test_census_cache_key_ignores_country_and_pins_dataset():
-    """The key covers the posted components and the dataset, but not the unsent country."""
-    provider = census.CensusProvider()
-    usa = SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA", postalcode="90210", country="US")
-    blank = SourceRecord(internal_key=1, address="1 Main St", city="Town", stateprov="CA", postalcode="90210")
-
-    assert provider.cache_key(usa) == provider.cache_key(blank)
-    assert census.CensusProvider.BENCHMARK in provider.cache_key(usa)
-    assert census.CensusProvider.VINTAGE in provider.cache_key(usa)
-
-
-def test_census_cache_key_keeps_shifted_components_distinct():
-    """Rows whose components differ only in where a field boundary falls get distinct keys."""
-    provider = census.CensusProvider()
-    split = SourceRecord(internal_key=0, address="1 Main St|Town", city="CA")
-    shifted = SourceRecord(internal_key=1, address="1 Main St", city="Town|CA")
-
-    assert provider.cache_key(split) != provider.cache_key(shifted)
+def test_census_cache_version_pins_the_dataset():
+    """Cached entries are tagged with the dataset that answered them."""
+    assert census.CensusProvider.BENCHMARK in census.CensusProvider.CACHE_VERSION
+    assert census.CensusProvider.VINTAGE in census.CensusProvider.CACHE_VERSION
 
 
 def test_census_posts_each_distinct_address_once(monkeypatch):

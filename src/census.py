@@ -7,7 +7,6 @@ Geocoder — U.S. Census Bureau provider
 
 import csv
 import io
-import json
 from typing import Any, Dict, Iterator, List, Tuple
 
 import requests
@@ -25,7 +24,9 @@ class CensusProvider(Provider):
 
     The benchmark and vintage are pinned to the frozen Census2020 dataset so the
     positional response layout stays stable; the addressbatch endpoint returns
-    headerless CSV, so columns can only be read by their fixed position.
+    headerless CSV, so columns can only be read by their fixed position. That
+    pinned pair is also the version cached responses are tagged with, since
+    moving to another dataset asks a different question of the service.
     """
 
     requires_key = False
@@ -34,6 +35,7 @@ class CensusProvider(Provider):
     ENDPOINT = "https://geocoding.geo.census.gov/geocoder/geographies/addressbatch"
     BENCHMARK = "Public_AR_Census2020"
     VINTAGE = "Census2020_Census2020"
+    CACHE_VERSION = f"{BENCHMARK}/{VINTAGE}"
     BATCH_SIZE = 10000
     TIMEOUT = 300
 
@@ -51,30 +53,6 @@ class CensusProvider(Provider):
         "tract",
         "block",
     ]
-
-    def cache_key(self, record: SourceRecord) -> str:
-        """
-        Builds the key from the components Census is sent, plus the pinned dataset.
-
-        Country is excluded because the addressbatch CSV has no country column,
-        while the benchmark and vintage select which dataset answers the query.
-
-        The components are JSON-encoded rather than joined on a separator, so a
-        row whose fields happen to contain that separator cannot produce the same
-        key as a different row and be answered with its response.
-
-        Parameters
-        ----------
-        record : SourceRecord
-            The record whose query is being composed.
-
-        Return
-        ----------
-        str
-            The query text identifying this record's response.
-        """
-        parts = [record.address, record.city, record.stateprov, record.postalcode, self.BENCHMARK, self.VINTAGE]
-        return json.dumps(parts, ensure_ascii=False)
 
     def _fetch(self, records: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
         """
