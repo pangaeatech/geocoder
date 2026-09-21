@@ -1,11 +1,8 @@
 #!/usr/bin/python3
 # -.- coding: utf-8 -.-
-# -.- dependencies: Python 3.8+ -.-
 
 """
 Geocoder — Google Geocoding API provider
-
-Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
 from typing import Any, Dict, Iterator, List, Tuple
@@ -36,9 +33,20 @@ class GoogleProvider(Provider):
     Street addresses are assembled from the response components in the
     convention of the country they belong to, since Mexican addresses order and
     punctuate their parts differently from North American ones.
+
+    Rows whose address or city holds a Canadian legal land description are
+    queried without it: Google reads such a grid reference as a street address
+    and matches it to an unrelated road. Whatever ordinary place name the row
+    also carries is still sent, but the result is capped at the province the
+    parcel sits in.
+
+    The endpoint carries no version of its own, so cached responses are tagged
+    with one of ours, to be raised whenever a change here would make Google
+    answer differently.
     """
 
     requires_key = True
+    CACHE_VERSION = "v1"
 
     ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json"
     TIMEOUT = 30

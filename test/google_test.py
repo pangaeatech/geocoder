@@ -1,11 +1,8 @@
 #!/usr/bin/python3
 # -.- coding: utf-8 -.-
-# -.- dependencies: Python 3.8+ -.-
 
 """
 Geocoder Google Provider Tests
-
-Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
 from test.helpers import FakeResponse, assert_white_house
@@ -13,8 +10,8 @@ from test.helpers import FakeResponse, assert_white_house
 import pytest
 
 from src import google
-from src.api import PROVIDERS, SourceRecord
-from src.cache import Cache, normalize_query
+from src.api import LEGAL_LAND_NOTE, NO_ADDRESS_NOTE, PROVIDERS, SourceRecord, cache_key
+from src.cache import Cache
 
 
 def _result(location_type, components, **overrides):
@@ -43,6 +40,11 @@ CITY_COMPONENTS = [
     {"short_name": "Pendleton", "types": ["locality"]},
     {"short_name": "SC", "types": ["administrative_area_level_1"]},
     {"short_name": "US", "types": ["country"]},
+]
+
+PROVINCE_COMPONENTS = [
+    {"short_name": "AB", "types": ["administrative_area_level_1", "political"]},
+    {"short_name": "CA", "types": ["country", "political"]},
 ]
 
 MEXICO_COMPONENTS = [
@@ -268,11 +270,52 @@ def test_google_requests_each_distinct_address_once(monkeypatch):
 def test_google_error_status_is_never_cached(monkeypatch, tmp_path):
     """A failed request leaves nothing behind, so a later run retries it."""
     path = str(tmp_path / "cache.sqlite")
+    version = google.GoogleProvider.CACHE_VERSION
     _patch_response(monkeypatch, {"status": "OVER_QUERY_LIMIT", "error_message": "quota exceeded"})
 
-    with Cache(path) as cache:
+    record = SourceRecord(internal_key=0, address="1 Main St")
+    with Cache("google", version, path) as cache:
         with pytest.raises(ValueError):
-            google.GoogleProvider("key", cache).geocode([SourceRecord(internal_key=0, address="1 Main St")])
+            google.GoogleProvider("key", cache).geocode([record])
 
-    with Cache(path) as cache:
-        assert not cache.lookup("google", [normalize_query("1 Main St")])
+    with Cache("google", version, path) as cache:
+        assert not cache.lookup([cache_key(record)])
+
+
+def test_google_withholds_legal_land_description(monkeypatch):
+    """A rig row asks Google only for its province and is capped there."""
+    captured = {}
+    _patch_response(monkeypatch, _result("APPROXIMATE", PROVINCE_COMPONENTS), captured)
+
+    record = SourceRecord(internal_key=0, address="02-16-066-15w5", stateprov="Alberta", country="Canada")
+    result = google.GoogleProvider("key").geocode([record])[0]
+
+    assert captured["params"]["address"] == "Alberta, Canada"
+    assert result.result_stateprov == "AB"
+    assert result.accuracy == 20
+
+
+def test_google_caps_legal_land_description_at_the_province(monkeypatch):
+    """A street-level answer for a rig row is still capped at the province."""
+    _patch_response(monkeypatch, _result("ROOFTOP", ROOFTOP_COMPONENTS))
+
+    record = SourceRecord(internal_key=0, address="01-17-040-06w4", city="02-16-066-15w5", stateprov="Alberta")
+    result = google.GoogleProvider("key").geocode([record])[0]
+
+    assert result.accuracy == 20
+    assert result.match_notes == LEGAL_LAND_NOTE
+
+
+def test_google_skips_a_row_left_with_no_address(monkeypatch):
+    """A row that is nothing but a grid reference is never sent to Google."""
+
+    def fake_get(*args, **kwargs):
+        raise AssertionError("Google was queried for a row left with no address")
+
+    monkeypatch.setattr(google.requests, "get", fake_get)
+
+    result = google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="01-17-040-06w4")])[0]
+
+    assert result.match_type == "no_match"
+    assert result.accuracy == 0
+    assert result.match_notes == f"{NO_ADDRESS_NOTE}; {LEGAL_LAND_NOTE}"

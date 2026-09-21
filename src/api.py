@@ -1,28 +1,80 @@
 #!/usr/bin/python3
 # -.- coding: utf-8 -.-
-# -.- dependencies: Python 3.8+ -.-
 
 """
 Geocoder — provider base and shared types
-
-Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type, TypeVar
 
 import requests
 
-from .cache import Cache, normalize_query
+from .cache import Cache
 
 KEY_ENV_VARS = {
     "geocodio": "GEOCODIO_API_KEY",
     "google": "GOOGLE_GEOCODING_API_KEY",
 }
+
+LEGAL_SUBDIVISION = r"(?:[NS][EW]|\d{1,2})"
+SURVEY_GRID = r"\d{1,2}[-\s]\d{1,3}[-\s]\d{1,2}"
+
+DOMINION_LAND_SURVEY = rf"""
+    (?:{LEGAL_SUBDIVISION}[-\s]){{1,2}}         # quarter section and legal subdivision
+    {SURVEY_GRID}                               # section, township and range
+    (?:[-\s]?[WE]\s?[1-6]?M?|[-\s][1-6]M?)      # meridian, however it is written
+  | {SURVEY_GRID}                               # section, township and range, unqualified
+    [-\s]?[WE]\s?[1-6]M?                        # meridian, lettered and numbered so a lot number cannot match
+"""
+
+NATIONAL_TOPOGRAPHIC_SYSTEM = r"""
+    [A-L]-\d{1,3}-[A-L]                         # unit, block and quarter of the map sheet
+    [-\s/]{0,2}                                 # separator, written inconsistently or omitted
+    \d{2,3}-[A-P]-\d{1,2}                       # map sheet, series and area
+"""
+
+LEGAL_LAND_DESCRIPTION = re.compile(
+    rf"\b(?:{DOMINION_LAND_SURVEY}|{NATIONAL_TOPOGRAPHIC_SYSTEM})\b",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+LEGAL_LAND_NOTE = "Legal land description withheld from the provider"
+NO_ADDRESS_NOTE = "No address to geocode"
+
+
+def strip_legal_land_description(value: str) -> str:
+    """
+    Removes any Canadian legal land description from the given value.
+
+    A legal land description locates an oil rig on a survey grid rather than on
+    a street, and no supported provider covers one: left in a query it is
+    misread as a street address and drags the match onto an unrelated road.
+    What remains is kept only when it still holds a letter, since the digits a
+    well identifier strands behind locate nothing on their own.
+
+    Parameters
+    ----------
+    value : str
+        The address or city text to clean.
+
+    Return
+    ----------
+    str
+        The value without its legal land description, or an empty string when
+        nothing locatable was left behind.
+    """
+    remainder = LEGAL_LAND_DESCRIPTION.sub(" ", value)
+    if remainder == value:
+        return value
+
+    remainder = " ".join(remainder.split()).strip(" ,-/")
+    return remainder if any(character.isalpha() for character in remainder) else ""
 
 
 @dataclass
@@ -41,9 +93,26 @@ class SourceRecord:
     longitude: str = ""
 
     def address_string(self) -> str:
-        """Joins the non-blank address components into a single query string."""
-        parts = [self.address, self.city, self.stateprov, self.postalcode, self.country]
+        """
+        Joins the non-blank address components into a single query string.
+
+        Any legal land description is stripped from the street and city, leaving
+        a rig row to be queried by whatever ordinary place name it still carries
+        — the nearest town it names locates it far better than its province
+        alone. The postal code is withheld from such a row: a parcel on a survey
+        grid has none of its own, so that field holds the operator's code or a
+        transcription error, and with the result capped at the province it can
+        only pull the match away from the parcel.
+        """
+        street = strip_legal_land_description(self.address)
+        city = strip_legal_land_description(self.city)
+        postalcode = "" if self.has_legal_land_description() else self.postalcode
+        parts = [street, city, self.stateprov, postalcode, self.country]
         return ", ".join(part for part in parts if part)
+
+    def has_legal_land_description(self) -> bool:
+        """Reports whether the street or city holds a legal land description."""
+        return any(LEGAL_LAND_DESCRIPTION.search(part) for part in (self.address, self.city))
 
 
 @dataclass
@@ -85,7 +154,9 @@ class AccuracyLevel(IntEnum):
     COUNTRY = (10, "result_country")
     NONE = (0, "")
 
-    def __new__(cls, score, field_name):
+    field: str
+
+    def __new__(cls, score: int, field_name: str) -> "AccuracyLevel":
         """Builds a member valued by its score and tagged with its source field."""
         member = int.__new__(cls, score)
         member._value_ = score
@@ -125,6 +196,35 @@ def grade_accuracy(result: GeocodeResult, cap: Optional[int] = None) -> int:
         if level.field and getattr(result, level.field):
             return level if cap is None else min(level, cap)
     return AccuracyLevel.NONE
+
+
+def apply_legal_land_limit(record: SourceRecord, result: GeocodeResult) -> GeocodeResult:
+    """
+    Bounds a result at the precision its source row could support.
+
+    A row carrying a legal land description is queried without it, so the
+    provider never saw the parcel itself — only the town or province around it.
+    The score is capped at the province and annotated, rather than reporting a
+    coincidental street-level answer as the rig's location.
+
+    Parameters
+    ----------
+    record : SourceRecord
+        The source row the result was produced for.
+    result : GeocodeResult
+        The result to bound, modified in place.
+
+    Return
+    ----------
+    GeocodeResult
+        The same result, capped and annotated when the row named a parcel.
+    """
+    if not record.has_legal_land_description():
+        return result
+
+    result.accuracy = min(result.accuracy, AccuracyLevel.STATE)
+    result.match_notes = "; ".join(note for note in (result.match_notes, LEGAL_LAND_NOTE) if note)
+    return result
 
 
 ROUTE_FIRST_COUNTRIES = {"MX"}
@@ -175,13 +275,40 @@ def format_street_address(country: str, street: str, number: str = "", subpremis
     return f"{address}, {sublocality}" if sublocality else address
 
 
+def cache_key(record: SourceRecord) -> str:
+    """
+    Canonicalizes a record into the key its cached response is stored under.
+
+    Every provider is asked the same question — the record's address string — so
+    the key is the same for all of them, and what differs between them is only
+    the table it is stored in and the version tag it carries.
+
+    Letter case and runs of whitespace are folded so equivalent rows share one
+    cached response; nothing else is altered, since punctuation and
+    abbreviations can change what a geocoder returns. A row left with nothing
+    to ask about yields an empty key.
+
+    Parameters
+    ----------
+    record : SourceRecord
+        The record whose query is being composed.
+
+    Return
+    ----------
+    str
+        The canonical key for that record's response.
+    """
+    return " ".join(record.address_string().split()).casefold()
+
+
 PROVIDERS: Dict[str, Type["Provider"]] = {}
+T = TypeVar("T", bound="Provider")
 
 
-def register(name: str):
+def register(name: str) -> Callable[[Type[T]], Type[T]]:
     """Class decorator that registers a Provider subclass under the given name."""
 
-    def decorator(cls):
+    def decorator(cls: Type[T]) -> Type[T]:
         cls.name = name
         PROVIDERS[name] = cls
         return cls
@@ -193,38 +320,27 @@ class Provider(ABC):
     """
     Base class for geocoding providers; subclasses self-register via @register.
 
-    Subclasses supply ``_fetch``, ``parse``, and ``cache_key``; deduplication and
-    caching are handled once here so no provider repeats them.
+    Subclasses supply ``_fetch`` and ``parse``; deduplication, caching, and the
+    limits a source row imposes are handled once here so no provider repeats
+    them.
+
+    A subclass also declares CACHE_VERSION, which names everything about how it
+    calls its API that a cached response depends on — the API version, and any
+    dataset the call is pinned to. It tags the entries a provider writes, so a
+    later change to the call retires them instead of serving answers the
+    provider would no longer give.
     """
 
     name: str = ""
     requires_key: bool = False
+    CACHE_VERSION: str = ""
     MAX_ATTEMPTS = 3
     RETRY_BACKOFF = 5
     MAX_ACCURACY = AccuracyLevel.ROOFTOP
 
     def __init__(self, api_key: Optional[str] = None, cache: Optional[Cache] = None):
         self.api_key = api_key
-        self.cache = cache if cache is not None else Cache()
-
-    def cache_key(self, record: SourceRecord) -> str:
-        """
-        Returns the query text this provider would send for the given record.
-
-        Two records with the same key are answered by a single API call, so the key
-        must cover everything that changes the response.
-
-        Parameters
-        ----------
-        record : SourceRecord
-            The record whose query is being composed.
-
-        Return
-        ----------
-        str
-            The query text identifying this record's response.
-        """
-        return record.address_string()
+        self.cache = cache if cache is not None else Cache(self.name, self.CACHE_VERSION)
 
     @abstractmethod
     def _fetch(self, records: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
@@ -260,6 +376,8 @@ class Provider(ABC):
 
         Records sharing a query are collapsed to a single API call and cached
         queries skip the API entirely, with or without a cache file configured.
+        A row left with nothing to ask about is never sent, and every result is
+        bounded by the precision its source row could support.
 
         Parameters
         ----------
@@ -271,12 +389,12 @@ class Provider(ABC):
         List[GeocodeResult]
             One result per input record, aligned by position.
         """
-        keys = [normalize_query(self.cache_key(record)) for record in records]
-        responses = self.cache.lookup(self.name, keys)
+        keys = [cache_key(record) for record in records]
+        responses = self.cache.lookup(key for key in keys if key)
 
         pending: Dict[str, SourceRecord] = {}
         for key, record in zip(keys, records):
-            if key not in responses and key not in pending:
+            if key and key not in responses and key not in pending:
                 pending[key] = record
 
         if records:
@@ -284,13 +402,25 @@ class Provider(ABC):
 
         if pending:
             for record, raw in self._fetch(list(pending.values())):
-                query = self.cache_key(record)
-                key = normalize_query(query)
+                key = cache_key(record)
                 responses[key] = raw
-                self.cache.store(self.name, key, query, raw)
+                self.cache.store(key, raw)
             self.cache.commit()
 
-        return [self.parse(responses[key]) if key in responses else GeocodeResult(match_notes="No match") for key in keys]
+        return [apply_legal_land_limit(record, self._result(key, responses)) for record, key in zip(records, keys)]
+
+    def _result(self, key: str, responses: Dict[str, Any]) -> GeocodeResult:
+        """
+        Reads one record's result out of the responses gathered for the run.
+
+        A record with no key had nothing left to query and was never sent; one
+        whose key no response answers is a no match.
+        """
+        if not key:
+            return GeocodeResult(match_notes=NO_ADDRESS_NOTE)
+        if key in responses:
+            return self.parse(responses[key])
+        return GeocodeResult(match_notes="No match")
 
     def _request_with_retry(self, send: Callable[[], requests.Response]) -> requests.Response:
         """
@@ -316,7 +446,7 @@ class Provider(ABC):
         requests.RequestException
             If every attempt fails.
         """
-        last_error = None
+        last_error: Optional[requests.RequestException] = None
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
             try:
                 response = send()
@@ -326,6 +456,7 @@ class Provider(ABC):
                 last_error = error
                 if attempt < self.MAX_ATTEMPTS:
                     time.sleep(self.RETRY_BACKOFF * attempt)
+        assert last_error is not None
         raise last_error
 
 

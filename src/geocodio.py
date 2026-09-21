@@ -1,11 +1,8 @@
 #!/usr/bin/python3
 # -.- coding: utf-8 -.-
-# -.- dependencies: Python 3.8+ -.-
 
 """
 Geocoder — Geocodio provider
-
-Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 """
 
 from typing import Any, Dict, Iterator, List, Tuple
@@ -32,17 +29,27 @@ class GeocodioProvider(Provider):
     so grading the fields alone would report those coarser matches as rooftop
     precision. Each accuracy_type therefore caps the graded score at the
     precision it actually represents, and a match resolved to a street with no
-    house number is capped lower still.
+    house number is capped lower still. The mapped types are every accuracy_type
+    forward geocoding reports; ``nearest_street`` and ``nearest_place`` are
+    documented for reverse geocoding alone, and a postal code arrives as
+    ``place`` rather than as a type of its own.
 
     Street addresses are assembled from the response components in the
     convention of the country they belong to. Geocodio's own ``address_lines``
     are not used: it writes that line house number first for every country,
     which is the wrong order for Mexican addresses.
+
+    Rows whose address or city holds a Canadian legal land description are
+    queried without it: Geocodio reads such a grid reference as a street address
+    and matches it to an unrelated road. Whatever ordinary place name the row
+    also carries is still sent, but the result is capped at the province the
+    parcel sits in.
     """
 
     requires_key = True
+    CACHE_VERSION = "v1.7"
 
-    ENDPOINT = "https://api.geocod.io/v1.7/geocode"
+    ENDPOINT = f"https://api.geocod.io/{CACHE_VERSION}/geocode"
     BATCH_SIZE = 10000
     TIMEOUT = 600
 
