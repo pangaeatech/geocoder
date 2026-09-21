@@ -224,7 +224,7 @@ class Cache:
         """Returns the cache so it can be used as a context manager."""
         return self
 
-    def __exit__(self, *_exception) -> None:
+    def __exit__(self, *_exception: object) -> None:
         """Closes the cache when the context exits."""
         self.close()
 
