@@ -237,6 +237,29 @@ def test_geocodio_aligns_entries_by_position(monkeypatch):
     assert results[2].accuracy == 40
 
 
+def test_geocodio_posts_each_distinct_address_once(monkeypatch):
+    """Repeated addresses are collapsed so the posted batch carries one entry each."""
+    posted = []
+
+    def fake_post(_url, json=None, **_kwargs):
+        posted.append(json)
+        return FakeResponse(_batch(*[[_candidate("rooftop", ROOFTOP_COMPONENTS)] for _ in json]))
+
+    monkeypatch.setattr(geocodio.requests, "post", fake_post)
+
+    records = [
+        SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA"),
+        SourceRecord(internal_key=1, address="1  MAIN  ST", city="Town", stateprov="CA"),
+        SourceRecord(internal_key=2, address="2 Oak St", city="Town", stateprov="CA"),
+    ]
+    results = geocodio.GeocodioProvider("key").geocode(records)
+
+    assert len(posted) == 1
+    assert len(posted[0]) == 2
+    assert len(results) == 3
+    assert all(result.accuracy == 100 for result in results)
+
+
 def test_geocodio_raises_on_entry_count_mismatch(monkeypatch):
     """A response short of one entry per record fails loudly instead of misaligning."""
     _patch_response(monkeypatch, _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)]))

@@ -11,9 +11,11 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type, TypeVar
 
 import requests
+
+from .cache import Cache
 
 KEY_ENV_VARS = {
     "geocodio": "GEOCODIO_API_KEY",
@@ -273,6 +275,32 @@ def format_street_address(country: str, street: str, number: str = "", subpremis
     return f"{address}, {sublocality}" if sublocality else address
 
 
+def cache_key(record: SourceRecord) -> str:
+    """
+    Canonicalizes a record into the key its cached response is stored under.
+
+    Every provider is asked the same question — the record's address string — so
+    the key is the same for all of them, and what differs between them is only
+    the table it is stored in and the version tag it carries.
+
+    Letter case and runs of whitespace are folded so equivalent rows share one
+    cached response; nothing else is altered, since punctuation and
+    abbreviations can change what a geocoder returns. A row left with nothing
+    to ask about yields an empty key.
+
+    Parameters
+    ----------
+    record : SourceRecord
+        The record whose query is being composed.
+
+    Return
+    ----------
+    str
+        The canonical key for that record's response.
+    """
+    return " ".join(record.address_string().split()).casefold()
+
+
 PROVIDERS: Dict[str, Type["Provider"]] = {}
 T = TypeVar("T", bound="Provider")
 
@@ -289,25 +317,110 @@ def register(name: str) -> Callable[[Type[T]], Type[T]]:
 
 
 class Provider(ABC):
-    """Base class for geocoding providers; subclasses self-register via @register."""
+    """
+    Base class for geocoding providers; subclasses self-register via @register.
+
+    Subclasses supply ``_fetch`` and ``parse``; deduplication, caching, and the
+    limits a source row imposes are handled once here so no provider repeats
+    them.
+
+    A subclass also declares CACHE_VERSION, which names everything about how it
+    calls its API that a cached response depends on — the API version, and any
+    dataset the call is pinned to. It tags the entries a provider writes, so a
+    later change to the call retires them instead of serving answers the
+    provider would no longer give.
+    """
 
     name: str = ""
     requires_key: bool = False
+    CACHE_VERSION: str = ""
     MAX_ATTEMPTS = 3
     RETRY_BACKOFF = 5
     MAX_ACCURACY = AccuracyLevel.ROOFTOP
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, cache: Optional[Cache] = None):
         self.api_key = api_key
+        self.cache = cache if cache is not None else Cache(self.name, self.CACHE_VERSION)
 
     @abstractmethod
-    def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
-        """Returns one GeocodeResult per input record, in the same order."""
+    def _fetch(self, records: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
+        """
+        Yields each record paired with its raw provider response, as replies arrive.
 
-    @staticmethod
-    def unqueryable_result() -> GeocodeResult:
-        """Returns the no-match a record with nothing left to query resolves to."""
-        return GeocodeResult(match_notes=NO_ADDRESS_NOTE)
+        Everything yielded is cached, so only responses validated against the
+        provider's expected shape may be yielded; a failed response must raise.
+        """
+
+    @abstractmethod
+    def parse(self, raw: Dict[str, Any]) -> GeocodeResult:
+        """
+        Converts one raw provider response into a normalized, graded GeocodeResult.
+
+        Cached and freshly fetched responses both come through here, so a stored
+        response is always scored by the current grading rules.
+
+        Parameters
+        ----------
+        raw : Dict[str, Any]
+            One response as the provider returned it.
+
+        Return
+        ----------
+        GeocodeResult
+            The normalized result that response describes.
+        """
+
+    def geocode(self, records: List[SourceRecord]) -> List[GeocodeResult]:
+        """
+        Returns one GeocodeResult per input record, in the same order.
+
+        Records sharing a query are collapsed to a single API call and cached
+        queries skip the API entirely, with or without a cache file configured.
+        A row left with nothing to ask about is never sent, and every result is
+        bounded by the precision its source row could support.
+
+        Parameters
+        ----------
+        records : List[SourceRecord]
+            The source rows to geocode.
+
+        Return
+        ----------
+        List[GeocodeResult]
+            One result per input record, aligned by position.
+        """
+        keys = [cache_key(record) for record in records]
+        responses = self.cache.lookup(key for key in keys if key)
+
+        pending: Dict[str, SourceRecord] = {}
+        for key, record in zip(keys, records):
+            if key and key not in responses and key not in pending:
+                pending[key] = record
+
+        if records:
+            print(f"{len(records)} rows, {len(responses) + len(pending)} distinct queries: {len(responses)} from cache, {len(pending)} to fetch")
+
+        if pending:
+            for record, raw in self._fetch(list(pending.values())):
+                key = cache_key(record)
+                responses[key] = raw
+                self.cache.store(key, raw)
+            self.cache.commit()
+
+        return [apply_legal_land_limit(record, self._result(key, responses)) for record, key in zip(records, keys)]
+
+    def _result(self, key: str, responses: Dict[str, Any]) -> GeocodeResult:
+        """
+        Reads one record's result out of the responses gathered for the run.
+
+        A record with no key had nothing left to query and was never sent; one
+        whose key no response answers is a no match.
+        """
+        if not key:
+            return GeocodeResult(match_notes=NO_ADDRESS_NOTE)
+        if key in responses:
+            return self.parse(responses[key])
+        return GeocodeResult(match_notes="No match")
 
     def _request_with_retry(self, send: Callable[[], requests.Response]) -> requests.Response:
         """

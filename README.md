@@ -91,6 +91,15 @@ poetry run geocoder input.xlsx output.xlsx --api census --cacheRead archive.sqli
 poetry run geocoder input.xlsx output.xlsx --api census --noCache
 ```
 
+`--noCache` opens no cache file at all, so `--cache` and `--cacheRead` are
+ignored when it is given; repeated addresses within a run still cost one call.
+A `--cacheRead` file must hold entries for the provider being run, and is
+rejected if it does not.
+
+Each provider's responses are stored in a table of their own, tagged with the
+version of the API that produced them: entries written by an earlier version are
+never served, and are replaced as their addresses are looked up again.
+
 ## Providers
 
 | Provider | `--api` value | Coverage | API key |

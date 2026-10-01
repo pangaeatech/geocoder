@@ -27,9 +27,13 @@ def test_register_adds_to_registry():
 
     @register("temp_provider")
     class _Temp(Provider):
-        def geocode(self, records):
-            """Returns no results; the class only exercises registration."""
-            return []
+        def _fetch(self, records):
+            """Yields nothing; the class only exercises registration."""
+            return iter(())
+
+        def parse(self, raw):
+            """Returns an empty result; the class only exercises registration."""
+            return GeocodeResult(raw=raw)
 
     try:
         assert api.PROVIDERS["temp_provider"] is _Temp
@@ -240,14 +244,22 @@ class _FakeResponse:
 
 
 class _RetryProvider(Provider):
-    """Routes a single retried request through geocode for the retry tests."""
+    """Routes a single retried request through the provider for the retry tests."""
 
     def __init__(self, send):
         super().__init__()
         self.send = send
 
-    def geocode(self, records):
-        """Returns the response from one retried request, ignoring records."""
+    def _fetch(self, records):
+        """Yields nothing; the class only exercises the retry helper."""
+        return iter(())
+
+    def parse(self, raw):
+        """Returns an empty result; the class only exercises the retry helper."""
+        return GeocodeResult(raw=raw)
+
+    def send_once(self):
+        """Returns the response from one retried request."""
         return self._request_with_retry(self.send)
 
 
@@ -262,7 +274,7 @@ def test_request_with_retry_succeeds_after_transient_error(monkeypatch):
             raise api.requests.ConnectionError("connection reset")
         return _FakeResponse("ok")
 
-    response = _RetryProvider(send).geocode([])
+    response = _RetryProvider(send).send_once()
 
     assert attempts["count"] == 3
     assert response.text == "ok"
@@ -278,5 +290,5 @@ def test_request_with_retry_reraises_after_exhausting_attempts(monkeypatch):
         raise api.requests.ConnectionError("connection reset")
 
     with pytest.raises(api.requests.ConnectionError):
-        _RetryProvider(send).geocode([])
+        _RetryProvider(send).send_once()
     assert attempts["count"] == Provider.MAX_ATTEMPTS

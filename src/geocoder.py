@@ -12,7 +12,7 @@ import argparse
 import json
 import os
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Type
 
 from openpyxl import Workbook, load_workbook
 
@@ -25,6 +25,7 @@ from .api import (
     SourceRecord,
     resolve_api_key,
 )
+from .cache import DEFAULT_CACHE_FILE, Cache, missing_files
 from .flags import format_flags
 from .postprocess import MATCH_HEADERS, compare_record
 from .preprocess import BLANK_CHECKED_FIELDS, PRE_HEADERS, QUERY_FIELDS, check_records
@@ -761,6 +762,26 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="use the worksheet name as COUNTRY when a row's country is blank",
     )
     parser.add_argument(
+        "--cache",
+        default=None,
+        metavar="FILE",
+        help=f"SQLite cache of prior API responses, read and written " f"(default: {DEFAULT_CACHE_FILE} in the working directory)",
+    )
+    parser.add_argument(
+        "--cacheRead",
+        dest="cache_read",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="existing SQLite cache to read but never write; repeatable",
+    )
+    parser.add_argument(
+        "--noCache",
+        dest="no_cache",
+        action="store_true",
+        help="open no cache file, ignoring --cache and --cacheRead; repeated addresses within the run are still collapsed",
+    )
+    parser.add_argument(
         "--preProcess",
         dest="preprocess",
         action="store_true",
@@ -780,6 +801,49 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def open_cache(args: argparse.Namespace, provider_cls: Type[Provider]) -> Cache:
+    """
+    Opens the cache files the given provider will read and write.
+
+    A cache answers one provider calling one version of its API, so the
+    provider selects both the table read and the version tag written.
+
+    Parameters
+    ----------
+    args
+        The parsed command-line arguments.
+    provider_cls : Type[Provider]
+        The provider class whose responses the cache will hold.
+
+    Return
+    ----------
+    Cache
+        The cache to hand the provider; one backed by no file when --noCache
+        was given.
+
+    Raises
+    ----------
+    SystemExit
+        If a read-only cache file is missing, or a named file cannot be used
+        as a cache.
+    """
+    if args.no_cache:
+        return Cache(provider_cls.name, provider_cls.CACHE_VERSION)
+
+    absent = missing_files(args.cache_read)
+    if absent:
+        raise SystemExit(f"error: read-only cache file(s) do not exist: {', '.join(absent)}")
+
+    path = args.cache or DEFAULT_CACHE_FILE
+    try:
+        cache = Cache(provider_cls.name, provider_cls.CACHE_VERSION, path, args.cache_read)
+    except ValueError as error:
+        raise SystemExit(f"error: {error}") from error
+
+    print(f"using cache {os.path.abspath(path)}")
+    return cache
+
+
 def select_provider(args: argparse.Namespace) -> Optional[Provider]:
     """
     Builds the provider named on the command line, or None when it is 'none'.
@@ -797,7 +861,8 @@ def select_provider(args: argparse.Namespace) -> Optional[Provider]:
     Raises
     ----------
     SystemExit
-        If the api is unknown, or a required API key is not configured.
+        If the api is unknown, a required API key is not configured, or a named
+        cache file cannot be used.
     """
     if args.api == NO_API:
         return None
@@ -813,7 +878,7 @@ def select_provider(args: argparse.Namespace) -> Optional[Provider]:
         if not api_key:
             raise SystemExit(f"error: api '{args.api}' requires an API key " f"(pass --apiKey or set {KEY_ENV_VARS[args.api]})")
 
-    return provider_cls(api_key)
+    return provider_cls(api_key, open_cache(args, provider_cls))
 
 
 def main(argv: Optional[List[str]] = None) -> None:
@@ -832,9 +897,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     Raises
     ----------
     SystemExit
-        If the input file is missing, the output file already exists, the api is
-        unknown, a required API key is not configured, or no provider and no
-        check was asked for.
+        If the input file is missing, the output file already exists, a read-only
+        cache is missing or unusable, the api is unknown, a required API key is
+        not configured, or no provider and no check was asked for.
     """
     load_dotenv()
     args = parse_args(argv)
@@ -854,10 +919,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         compare=args.compare,
         debug=args.debug,
     )
-    if provider is None and holds_output(args.infile, args.worksheet):
-        recheck_workbook(args.infile, args.outfile, worksheet=args.worksheet, options=options)
-    else:
-        process_workbook(args.infile, args.outfile, provider, worksheet=args.worksheet, options=options)
+    try:
+        if provider is None and holds_output(args.infile, args.worksheet):
+            recheck_workbook(args.infile, args.outfile, worksheet=args.worksheet, options=options)
+        else:
+            process_workbook(args.infile, args.outfile, provider, worksheet=args.worksheet, options=options)
+    finally:
+        if provider is not None:
+            provider.cache.close()
     print(f"wrote {args.outfile}")
 
 

@@ -10,7 +10,8 @@ from test.helpers import FakeResponse, assert_white_house
 import pytest
 
 from src import google
-from src.api import LEGAL_LAND_NOTE, NO_ADDRESS_NOTE, PROVIDERS, SourceRecord
+from src.api import LEGAL_LAND_NOTE, NO_ADDRESS_NOTE, PROVIDERS, SourceRecord, cache_key
+from src.cache import Cache
 
 
 def _result(location_type, components, **overrides):
@@ -232,6 +233,53 @@ def test_google_raises_on_error_status(monkeypatch):
 
     with pytest.raises(ValueError):
         google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="1 Main St")])
+
+
+def test_google_raw_is_the_whole_response(monkeypatch):
+    """The stored raw value is the full envelope, not just the match read from it."""
+    _patch_response(monkeypatch, _result("ROOFTOP", ROOFTOP_COMPONENTS))
+
+    result = google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW")])[0]
+
+    assert result.raw["status"] == "OK"
+    assert result.raw["results"][0]["place_id"] == "PLACE"
+
+
+def test_google_requests_each_distinct_address_once(monkeypatch):
+    """Records sharing an address cost one request and all receive the result."""
+    requested = []
+
+    def fake_get(_url, params=None, **_kwargs):
+        requested.append(params["address"])
+        return FakeResponse(_result("ROOFTOP", ROOFTOP_COMPONENTS))
+
+    monkeypatch.setattr(google.requests, "get", fake_get)
+
+    records = [
+        SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA"),
+        SourceRecord(internal_key=1, address="1  MAIN  ST", city="Town", stateprov="CA"),
+        SourceRecord(internal_key=2, address="2 Oak St", city="Town", stateprov="CA"),
+    ]
+    results = google.GoogleProvider("key").geocode(records)
+
+    assert len(requested) == 2
+    assert len(results) == 3
+    assert all(result.accuracy == 100 for result in results)
+
+
+def test_google_error_status_is_never_cached(monkeypatch, tmp_path):
+    """A failed request leaves nothing behind, so a later run retries it."""
+    path = str(tmp_path / "cache.sqlite")
+    version = google.GoogleProvider.CACHE_VERSION
+    _patch_response(monkeypatch, {"status": "OVER_QUERY_LIMIT", "error_message": "quota exceeded"})
+
+    record = SourceRecord(internal_key=0, address="1 Main St")
+    with Cache("google", version, path) as cache:
+        with pytest.raises(ValueError):
+            google.GoogleProvider("key", cache).geocode([record])
+
+    with Cache("google", version, path) as cache:
+        assert not cache.lookup([cache_key(record)])
 
 
 def test_google_withholds_legal_land_description(monkeypatch):
