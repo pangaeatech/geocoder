@@ -695,6 +695,44 @@ def test_main_unusable_read_cache_exits(tmp_path):
         del api.PROVIDERS["mock"]
 
 
+def test_main_unopenable_cache_exits(tmp_path):
+    """A --cache path under a missing directory exits with a message rather than a traceback."""
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+
+    api.PROVIDERS["mock"] = MockProvider
+    try:
+        with pytest.raises(SystemExit, match="cannot be opened"):
+            main([str(infile), str(tmp_path / "out.xlsx"), "--api", "mock", "--cache", str(tmp_path / "gone" / "c.sqlite")])
+    finally:
+        del api.PROVIDERS["mock"]
+
+
+class KeyedProvider(MockProvider):
+    """In-test provider that refuses to run without an API key."""
+
+    requires_key = True
+
+
+def test_main_dotenv_key_does_not_leak_into_a_later_run(tmp_path, monkeypatch):
+    """A key read from one directory's .env is not available to a later run from another directory."""
+    monkeypatch.delenv("GEOCODIO_API_KEY", raising=False)
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / ".env").write_text("GEOCODIO_API_KEY=from_dotenv\n")
+    infile = tmp_path / "in.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+
+    monkeypatch.setitem(api.PROVIDERS, "geocodio", KeyedProvider)
+    monkeypatch.chdir(first)
+    main([str(infile), "out.xlsx", "--api", "geocodio", "--noCache"])
+
+    monkeypatch.chdir(second)
+    with pytest.raises(SystemExit, match="requires an API key"):
+        main([str(infile), "out.xlsx", "--api", "geocodio", "--noCache"])
+
+
 def test_main_runs_census_provider(tmp_path, monkeypatch):
     """--api census runs end to end and writes the census result columns."""
     infile = tmp_path / "in.xlsx"

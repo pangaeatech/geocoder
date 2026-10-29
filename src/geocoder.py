@@ -11,6 +11,7 @@ Copyright (c) 2026 Pangaea Information Technologies, Ltd.
 import argparse
 import json
 import os
+from collections import ChainMap
 from dataclasses import dataclass, replace
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Type
 
@@ -104,27 +105,35 @@ class Options:
     debug: bool = False
 
 
-def load_dotenv(path: str = ".env") -> None:
+def read_dotenv(path: str = ".env") -> Dict[str, str]:
     """
-    Loads KEY=VALUE pairs from a .env file into the environment.
+    Reads KEY=VALUE pairs from a .env file without touching the environment.
 
-    Existing environment variables are left untouched, and a missing file is ignored.
+    The process environment is left as it was, so one run's .env cannot leak
+    credentials into a later run made from another directory.
 
     Parameters
     ----------
     path : str
         The path of the .env file to read.
+
+    Return
+    ----------
+    Dict[str, str]
+        Each variable the file defines, or nothing when the file is missing.
     """
     if not os.path.exists(path):
-        return
+        return {}
 
+    variables = {}
     with open(path, encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, value = line.partition("=")
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+            variables.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    return variables
 
 
 def clean_cell(value: object) -> str:
@@ -874,7 +883,7 @@ def select_provider(args: argparse.Namespace) -> Optional[Provider]:
 
     api_key = None
     if provider_cls.requires_key:
-        api_key = resolve_api_key(args.api, args.api_key)
+        api_key = resolve_api_key(args.api, args.api_key, ChainMap(os.environ, read_dotenv()))
         if not api_key:
             raise SystemExit(f"error: api '{args.api}' requires an API key " f"(pass --apiKey or set {KEY_ENV_VARS[args.api]})")
 
@@ -901,7 +910,6 @@ def main(argv: Optional[List[str]] = None) -> None:
         cache is missing or unusable, the api is unknown, a required API key is
         not configured, or no provider and no check was asked for.
     """
-    load_dotenv()
     args = parse_args(argv)
 
     if not os.path.isfile(args.infile):
