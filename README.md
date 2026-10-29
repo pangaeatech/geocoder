@@ -52,6 +52,11 @@ For example:
 | 1 | 1600 Pennsylvania Ave NW | Washington | DC | 20500 | US |
 | 2 | 111 Richmond St W | Toronto | ON | M5H 2G4 | CA |
 
+Cells are read as the values Excel last saved for them; formulas are not
+evaluated. A formula in an address column is geocoded as its saved result, and
+one never calculated in Excel reads as blank, so save the workbook in Excel
+first or paste such columns as values.
+
 All worksheets are processed by default. Pass a worksheet name as the third
 positional argument to process just one sheet.
 
