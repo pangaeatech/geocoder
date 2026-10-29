@@ -125,7 +125,7 @@ def read_dotenv(path: str = ".env") -> Dict[str, str]:
     if not os.path.exists(path):
         return {}
 
-    variables = {}
+    variables: Dict[str, str] = {}
     with open(path, encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()

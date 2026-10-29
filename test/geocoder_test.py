@@ -733,6 +733,14 @@ def test_main_dotenv_key_does_not_leak_into_a_later_run(tmp_path, monkeypatch):
         main([str(infile), "out.xlsx", "--api", "geocodio", "--noCache"])
 
 
+def test_read_dotenv_keeps_the_first_value_of_a_repeated_key(tmp_path):
+    """A key defined twice in .env resolves to its first definition."""
+    path = tmp_path / ".env"
+    path.write_text("GEOCODIO_API_KEY=first\nGEOCODIO_API_KEY=second\n")
+
+    assert geocoder.read_dotenv(str(path)) == {"GEOCODIO_API_KEY": "first"}
+
+
 def test_main_runs_census_provider(tmp_path, monkeypatch):
     """--api census runs end to end and writes the census result columns."""
     infile = tmp_path / "in.xlsx"
