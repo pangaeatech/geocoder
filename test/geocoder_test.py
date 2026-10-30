@@ -66,6 +66,14 @@ class CoarseProvider(MockProvider):
         return results
 
 
+class FailingProvider(MockProvider):
+    """In-test provider whose service refuses every request."""
+
+    def _fetch(self, records):
+        """Fails as a provider does when its service rejects the request."""
+        raise api.ProviderError("mock request failed: 503 Server Error")
+
+
 def _make_workbook(path, sheets):
     """
     Writes a temporary workbook for a test.
@@ -332,6 +340,22 @@ def test_main_runs_registered_provider(tmp_path):
         del api.PROVIDERS["mock"]
 
     assert outfile.exists()
+
+
+def test_main_reports_a_provider_failure_as_an_error_message(tmp_path):
+    """A provider failure exits with a concise error and writes no output file."""
+    infile = tmp_path / "in.xlsx"
+    outfile = tmp_path / "out.xlsx"
+    _make_workbook(infile, {"S": [["Address", "City", "State"], ["1 A St", "Town", "CA"]]})
+
+    api.PROVIDERS["mock"] = FailingProvider
+    try:
+        with pytest.raises(SystemExit, match="^error: mock request failed: 503 Server Error$"):
+            main([str(infile), str(outfile), "--api", "mock", "--noCache"])
+    finally:
+        del api.PROVIDERS["mock"]
+
+    assert not outfile.exists()
 
 
 def test_main_defaults_to_a_cache_in_the_working_directory(tmp_path, monkeypatch):

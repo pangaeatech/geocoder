@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterator, List, Tuple
 
 import requests
 
-from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, format_street_address, grade_accuracy, register
+from .api import AccuracyLevel, GeocodeResult, Provider, ProviderError, SourceRecord, format_street_address, grade_accuracy, is_location, register
 
 
 @register("google")
@@ -74,8 +74,9 @@ class GoogleProvider(Provider):
         Queries one address per request, yielding each response as it arrives.
 
         A status other than a match or an empty result means the request itself
-        failed — a rejected key or an exhausted quota — so it is raised here rather
-        than yielded, keeping a failure out of the cache and off the output.
+        failed — a rejected key or an exhausted quota — and a match without the
+        fields parse reads is malformed, so either is raised here rather than
+        yielded, keeping a failure out of the cache and off the output.
 
         Parameters
         ----------
@@ -89,17 +90,16 @@ class GoogleProvider(Provider):
 
         Raises
         ----------
-        ValueError
-            If Google reports a status other than OK or ZERO_RESULTS.
+        ProviderError
+            If Google reports a status other than OK or ZERO_RESULTS, or an OK
+            response is malformed.
         """
         for record in records:
             payload = self._request(record.address_string())
-            status = payload.get("status", "UNKNOWN")
-            if status not in ("OK", "ZERO_RESULTS"):
-                raise ValueError(f"Google geocoding failed with status {status!r}: {payload.get('error_message', '')}".strip())
+            self._check_payload(payload)
             yield record, payload
 
-    def _request(self, address: str) -> Dict:
+    def _request(self, address: str) -> Any:
         """Sends one geocoding request through the retrying request helper."""
         response = self._request_with_retry(
             lambda: requests.get(
@@ -108,7 +108,34 @@ class GoogleProvider(Provider):
                 timeout=self.TIMEOUT,
             )
         )
-        return response.json()
+        return self._decode_json(response)
+
+    @staticmethod
+    def _check_payload(payload: Any) -> None:
+        """
+        Fails loudly unless a response is a no-match or a match parse can read.
+
+        A match must lead with a result carrying a numeric location and a list
+        of typed address components, the fields parse reads without a default.
+        """
+        status = payload.get("status", "UNKNOWN") if isinstance(payload, dict) else "UNKNOWN"
+        if status == "ZERO_RESULTS":
+            return
+        if status != "OK":
+            message = payload.get("error_message", "") if isinstance(payload, dict) else ""
+            raise ProviderError(f"Google geocoding failed with status {status!r}", message or payload)
+
+        results = payload.get("results")
+        match = results[0] if isinstance(results, list) and results else None
+        geometry = match.get("geometry") if isinstance(match, dict) else None
+        components = match.get("address_components", []) if isinstance(match, dict) else None
+        if not (
+            isinstance(geometry, dict)
+            and is_location(geometry.get("location"))
+            and isinstance(components, list)
+            and all(isinstance(component, dict) and isinstance(component.get("types", []), list) for component in components)
+        ):
+            raise ProviderError("Google returned a malformed OK response", payload)
 
     def parse(self, raw: Dict[str, Any]) -> GeocodeResult:
         """

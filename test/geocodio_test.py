@@ -5,12 +5,13 @@
 Geocoder Geocodio Provider Tests
 """
 
-from test.helpers import FakeResponse, assert_white_house
+from test.helpers import FakeResponse, assert_white_house, html_response
 
 import pytest
 
 from src import geocodio
-from src.api import LEGAL_LAND_NOTE, NO_ADDRESS_NOTE, PROVIDERS, SourceRecord
+from src.api import LEGAL_LAND_NOTE, NO_ADDRESS_NOTE, PROVIDERS, ProviderError, SourceRecord, cache_key
+from src.cache import Cache
 
 
 def _candidate(accuracy_type, components, **overrides):
@@ -268,7 +269,7 @@ def test_geocodio_raises_on_entry_count_mismatch(monkeypatch):
         SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW"),
         SourceRecord(internal_key=1, address="Nowhere St"),
     ]
-    with pytest.raises(ValueError):
+    with pytest.raises(ProviderError):
         geocodio.GeocodioProvider("key").geocode(records)
 
 
@@ -311,3 +312,69 @@ def test_geocodio_keeps_a_row_left_with_no_address_out_of_the_batch(monkeypatch)
     assert results[0].match_notes == f"{NO_ADDRESS_NOTE}; {LEGAL_LAND_NOTE}"
     assert results[0].accuracy == 0
     assert results[1].accuracy == 100
+
+
+def _assert_never_cached(monkeypatch, tmp_path, fake_post):
+    """Asserts a batch answered by fake_post raises a provider error and caches nothing."""
+    path = str(tmp_path / "cache.sqlite")
+    version = geocodio.GeocodioProvider.CACHE_VERSION
+    monkeypatch.setattr(geocodio.requests, "post", fake_post)
+
+    records = [
+        SourceRecord(internal_key=0, address="1600 Pennsylvania Ave NW", city="Washington", stateprov="DC"),
+        SourceRecord(internal_key=1, address="1 Main St", city="Town", stateprov="CA"),
+    ]
+    with Cache("geocodio", version, path) as cache:
+        with pytest.raises(ProviderError, match="(?i)geocodio"):
+            geocodio.GeocodioProvider("key", cache).geocode(records)
+
+    with Cache("geocodio", version, path) as cache:
+        assert not cache.lookup([cache_key(record) for record in records])
+
+
+def test_geocodio_entry_error_is_never_cached(monkeypatch, tmp_path):
+    """An entry reporting an error is raised rather than cached as a no-match, and spoils the batch."""
+    payload = _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)], [])
+    payload["results"][1] = {"query": "1 Main St", "response": {"error": "Could not geocode address. Postal code or city required."}}
+
+    _assert_never_cached(monkeypatch, tmp_path, lambda *_args, **_kwargs: FakeResponse(payload))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": "Payment required"},
+        {"results": {}},
+        [],
+    ],
+)
+def test_geocodio_success_without_batch_results_is_never_cached(monkeypatch, tmp_path, body):
+    """A successful status whose body holds no batch results is a failure, not a pair of no-matches."""
+    _assert_never_cached(monkeypatch, tmp_path, lambda *_args, **_kwargs: FakeResponse(body))
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "entry",
+        {},
+        {"response": "response"},
+        {"response": {}},
+        {"response": {"results": {}}},
+        {"response": {"results": ["candidate"]}},
+        {"response": {"results": [_candidate("rooftop", ROOFTOP_COMPONENTS, location=None)]}},
+        {"response": {"results": [_candidate("rooftop", ROOFTOP_COMPONENTS, location={"lat": "38.9", "lng": -77.0})]}},
+        {"response": {"results": [_candidate("rooftop", [])]}},
+    ],
+)
+def test_geocodio_malformed_entry_is_never_cached(monkeypatch, tmp_path, entry):
+    """An entry parse cannot read raises a provider error and caches nothing from the batch."""
+    payload = _batch([_candidate("rooftop", ROOFTOP_COMPONENTS)], [])
+    payload["results"][1] = entry
+
+    _assert_never_cached(monkeypatch, tmp_path, lambda *_args, **_kwargs: FakeResponse(payload))
+
+
+def test_geocodio_invalid_json_is_contextualized_and_never_cached(monkeypatch, tmp_path):
+    """A non-JSON body names the provider and status rather than leaking a bare decoder error."""
+    _assert_never_cached(monkeypatch, tmp_path, lambda *_args, **_kwargs: html_response())
