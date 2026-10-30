@@ -5,6 +5,10 @@
 Geocoder Shared Provider Test Helpers
 """
 
+import io
+
+import requests
+
 
 class FakeResponse:
     """Stands in for a requests.Response so provider tests avoid the network."""
@@ -18,6 +22,14 @@ class FakeResponse:
     def json(self):
         """Returns the canned decoded payload."""
         return self._payload
+
+
+def html_response():
+    """Builds a real successful response whose body is a proxy's HTML page rather than JSON."""
+    response = requests.Response()
+    response.status_code = 200
+    response.raw = io.BytesIO(b"<html>Bad Gateway</html>")
+    return response
 
 
 def assert_white_house(result):

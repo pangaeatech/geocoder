@@ -8,7 +8,8 @@ Geocoder Census Provider Tests
 import pytest
 
 from src import census
-from src.api import PROVIDERS, SourceRecord
+from src.api import PROVIDERS, ProviderError, SourceRecord, cache_key
+from src.cache import Cache
 
 
 class _FakeResponse:
@@ -129,7 +130,7 @@ def test_census_raises_on_truncated_match_row(monkeypatch):
 
     monkeypatch.setattr(census.requests, "post", fake_post)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProviderError):
         census.CensusProvider().geocode([SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA")])
 
 
@@ -141,7 +142,7 @@ def test_census_raises_on_shifted_coordinates(monkeypatch):
 
     monkeypatch.setattr(census.requests, "post", fake_post)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProviderError):
         census.CensusProvider().geocode([SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA")])
 
 
@@ -157,7 +158,7 @@ def test_census_raises_on_row_count_mismatch(monkeypatch):
         SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA"),
         SourceRecord(internal_key=1, address="2 Oak St", city="Town", stateprov="CA"),
     ]
-    with pytest.raises(ValueError):
+    with pytest.raises(ProviderError):
         census.CensusProvider().geocode(records)
 
 
@@ -202,3 +203,60 @@ def test_census_raw_drops_the_run_local_id(monkeypatch):
 
     assert "id" not in result.raw
     assert result.raw["match_status"] == "Match"
+
+
+NO_MATCH_ROW = '"{}","1 Main St, Town, CA","No_Match"\r\n'
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [
+        ["0", "7"],
+        ["0", "0"],
+        ["0"],
+        ["0", ""],
+        ["0", "one"],
+        ["0", "1", "2"],
+    ],
+)
+def test_census_mismatched_ids_are_never_cached(monkeypatch, tmp_path, ids):
+    """Unknown, duplicate, missing, blank or non-numeric ids fail the batch before any row is cached."""
+    path = str(tmp_path / "cache.sqlite")
+    version = census.CensusProvider.CACHE_VERSION
+    monkeypatch.setattr(census.requests, "post", lambda *_args, **_kwargs: _FakeResponse("".join(NO_MATCH_ROW.format(key) for key in ids)))
+
+    records = [
+        SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA"),
+        SourceRecord(internal_key=1, address="2 Oak St", city="Town", stateprov="CA"),
+    ]
+    with Cache("census", version, path) as cache:
+        with pytest.raises(ProviderError, match="ids"):
+            census.CensusProvider(cache=cache).geocode(records)
+
+    with Cache("census", version, path) as cache:
+        assert not cache.lookup([cache_key(record) for record in records])
+
+
+def test_census_mismatched_ids_show_the_response(monkeypatch):
+    """An error page in place of the CSV is quoted in the failure so it can be diagnosed."""
+    monkeypatch.setattr(census.requests, "post", lambda *_args, **_kwargs: _FakeResponse("<html>Service Unavailable</html>"))
+
+    with pytest.raises(ProviderError, match="<html>Service Unavailable</html>"):
+        census.CensusProvider().geocode([SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA")])
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        '"0","1 Main St, Town, CA"',
+        '"0"',
+        '"0","1 Main St, Town, CA","Error"',
+        '"0","1 Main St, Town, CA","no_match"',
+    ],
+)
+def test_census_malformed_status_row_raises(monkeypatch, row):
+    """A row with a missing or unrecognized status is a layout failure, not a no-match."""
+    monkeypatch.setattr(census.requests, "post", lambda *_args, **_kwargs: _FakeResponse(row + "\r\n"))
+
+    with pytest.raises(ProviderError, match="status"):
+        census.CensusProvider().geocode([SourceRecord(internal_key=0, address="1 Main St", city="Town", stateprov="CA")])
