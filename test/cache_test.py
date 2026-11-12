@@ -241,6 +241,76 @@ def test_writable_cache_rejects_a_non_database(tmp_path):
     assert path.read_text() == "not a database"
 
 
+def test_writable_cache_rejects_a_differently_shaped_table(tmp_path):
+    """A writable file whose provider table lacks the cache columns is refused before any lookup."""
+    path = str(tmp_path / "legacy.sqlite")
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE counting (key TEXT, value TEXT)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(ValueError, match="missing"):
+        _cache(path)
+
+
+def test_writable_cache_rejects_an_unopenable_path(tmp_path):
+    """A writable cache under a missing directory is refused as a ValueError, not a raw sqlite error."""
+    with pytest.raises(ValueError, match="cannot be opened"):
+        _cache(str(tmp_path / "gone" / "cache.sqlite"))
+
+
+def test_read_only_cache_rejects_an_unopenable_path(tmp_path):
+    """A read-only cache SQLite cannot open is refused as a ValueError, not a raw sqlite error."""
+    with pytest.raises(ValueError, match="cannot be opened"):
+        _cache(None, [str(tmp_path)])
+
+
+def test_null_cached_response_is_a_miss(tmp_path):
+    """A read-only cache row with no response is fetched again rather than aborting the lookup."""
+    path = str(tmp_path / "loose.sqlite")
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE counting (query TEXT, version TEXT, response TEXT)")
+    connection.execute("INSERT INTO counting VALUES (?, 'v1', NULL)", (cache_key(_record(0, "1 Main St")),))
+    connection.commit()
+    connection.close()
+
+    with _cache(None, [path]) as cache:
+        assert not cache.lookup([cache_key(_record(0, "1 Main St"))])
+
+
+def test_unusable_read_only_cache_creates_no_writable_cache(tmp_path):
+    """A failed startup leaves no new writable cache file behind."""
+    foreign = tmp_path / "foreign.sqlite"
+    foreign.write_text("not a database")
+    path = tmp_path / "new.sqlite"
+
+    with pytest.raises(ValueError):
+        _cache(str(path), [str(foreign)])
+
+    assert not path.exists()
+
+
+def test_corrupt_cached_response_is_fetched_again(tmp_path):
+    """An entry that is not valid JSON is treated as a miss and replaced by the fresh response."""
+    path = str(tmp_path / "cache.sqlite")
+    with _cache(path) as cache:
+        _CountingProvider(cache).geocode([_record(0, "1 Main St")])
+
+    connection = sqlite3.connect(path)
+    connection.execute("UPDATE counting SET response = '{truncated'")
+    connection.commit()
+    connection.close()
+
+    with _cache(path) as cache:
+        provider = _CountingProvider(cache)
+        results = provider.geocode([_record(0, "1 Main St")])
+
+    assert provider.fetched == ["1 Main St, Town, CA"]
+    assert results[0].result_address == "1 Main St, Town, CA"
+    with _cache(path) as cache:
+        assert cache.lookup([cache_key(_record(0, "1 Main St"))])
+
+
 def test_missing_files_reports_only_absent_paths(tmp_path):
     """Existing paths are dropped and absent ones are reported in order."""
     present = tmp_path / "here.sqlite"
