@@ -5,12 +5,14 @@
 Geocoder Google Provider Tests
 """
 
-from test.helpers import FakeResponse, assert_white_house
+import copy
+
+from test.helpers import FakeResponse, assert_white_house, html_response
 
 import pytest
 
 from src import google
-from src.api import LEGAL_LAND_NOTE, NO_ADDRESS_NOTE, PROVIDERS, SourceRecord, cache_key
+from src.api import LEGAL_LAND_NOTE, NO_ADDRESS_NOTE, PROVIDERS, ProviderError, SourceRecord, cache_key
 from src.cache import Cache
 
 
@@ -231,7 +233,7 @@ def test_google_raises_on_error_status(monkeypatch):
     """A REQUEST_DENIED status fails loudly instead of masking a misconfiguration."""
     _patch_response(monkeypatch, {"status": "REQUEST_DENIED", "error_message": "The provided API key is invalid."})
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ProviderError):
         google.GoogleProvider("key").geocode([SourceRecord(internal_key=0, address="1 Main St")])
 
 
@@ -275,7 +277,63 @@ def test_google_error_status_is_never_cached(monkeypatch, tmp_path):
 
     record = SourceRecord(internal_key=0, address="1 Main St")
     with Cache("google", version, path) as cache:
-        with pytest.raises(ValueError):
+        with pytest.raises(ProviderError):
+            google.GoogleProvider("key", cache).geocode([record])
+
+    with Cache("google", version, path) as cache:
+        assert not cache.lookup([cache_key(record)])
+
+
+def _malformed(path, value):
+    """Builds an OK rooftop response with the value at the given key path replaced."""
+    payload = copy.deepcopy(_result("ROOFTOP", ROOFTOP_COMPONENTS))
+    target = payload
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = value
+    return payload
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"status": "OK"},
+        {"status": "OK", "results": []},
+        {"status": "OK", "results": {}},
+        {"status": "OK", "results": ["match"]},
+        _malformed(["results", 0, "geometry"], None),
+        _malformed(["results", 0, "geometry", "location"], []),
+        _malformed(["results", 0, "geometry", "location", "lat"], "38.9"),
+        _malformed(["results", 0, "address_components"], {}),
+        _malformed(["results", 0, "address_components", 0], "1600"),
+        _malformed(["results", 0, "address_components", 0, "types"], "street_number"),
+        ["not", "an", "envelope"],
+    ],
+)
+def test_google_malformed_ok_response_is_never_cached(monkeypatch, tmp_path, payload):
+    """An OK response parse cannot read raises a provider error and leaves nothing cached."""
+    path = str(tmp_path / "cache.sqlite")
+    version = google.GoogleProvider.CACHE_VERSION
+    _patch_response(monkeypatch, payload)
+
+    record = SourceRecord(internal_key=0, address="1 Main St")
+    with Cache("google", version, path) as cache:
+        with pytest.raises(ProviderError, match="Google"):
+            google.GoogleProvider("key", cache).geocode([record])
+
+    with Cache("google", version, path) as cache:
+        assert not cache.lookup([cache_key(record)])
+
+
+def test_google_invalid_json_is_contextualized_and_never_cached(monkeypatch, tmp_path):
+    """A non-JSON body names the provider, status and body, and leaves nothing cached."""
+    path = str(tmp_path / "cache.sqlite")
+    version = google.GoogleProvider.CACHE_VERSION
+    monkeypatch.setattr(google.requests, "get", lambda *_args, **_kwargs: html_response())
+
+    record = SourceRecord(internal_key=0, address="1 Main St")
+    with Cache("google", version, path) as cache:
+        with pytest.raises(ProviderError, match=r"google returned a non-JSON response \(HTTP 200\): <html>Bad Gateway</html>"):
             google.GoogleProvider("key", cache).geocode([record])
 
     with Cache("google", version, path) as cache:

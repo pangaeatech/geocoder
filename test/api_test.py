@@ -5,6 +5,8 @@
 Geocoder API Tests
 """
 
+import io
+
 import pytest
 
 from src import api
@@ -12,6 +14,7 @@ from src.api import (
     LEGAL_LAND_NOTE,
     GeocodeResult,
     Provider,
+    ProviderError,
     SourceRecord,
     apply_legal_land_limit,
     format_street_address,
@@ -289,6 +292,124 @@ def test_request_with_retry_reraises_after_exhausting_attempts(monkeypatch):
         attempts["count"] += 1
         raise api.requests.ConnectionError("connection reset")
 
-    with pytest.raises(api.requests.ConnectionError):
+    with pytest.raises(ProviderError):
         _RetryProvider(send).send_once()
     assert attempts["count"] == Provider.MAX_ATTEMPTS
+
+
+def _http_response(status, headers=None):
+    """Builds a real requests.Response carrying the given status and headers."""
+    response = api.requests.Response()
+    response.status_code = status
+    response.headers.update(headers or {})
+    return response
+
+
+def _send_responses(responses, attempts):
+    """Returns a send() replying with each response in turn, recording each one sent."""
+
+    def send():
+        attempts.append(responses[len(attempts)])
+        return attempts[-1]
+
+    return send
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
+def test_request_with_retry_fails_permanent_errors_at_once(monkeypatch, status):
+    """A client error other than a rate limit is permanent, so it is never retried."""
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: pytest.fail("a permanent failure must not wait"))
+    attempts = []
+
+    with pytest.raises(ProviderError, match=str(status)):
+        _RetryProvider(_send_responses([_http_response(status)], attempts)).send_once()
+    assert len(attempts) == 1
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503, 504])
+def test_request_with_retry_retries_transient_statuses(monkeypatch, status):
+    """A rate limit or temporary server error is retried until the request succeeds."""
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+    attempts = []
+
+    response = _RetryProvider(_send_responses([_http_response(status), _http_response(status), _http_response(200)], attempts)).send_once()
+
+    assert response.status_code == 200
+    assert len(attempts) == 3
+
+
+def test_request_with_retry_retries_timeouts(monkeypatch):
+    """A timed-out request is retried."""
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+    attempts = {"count": 0}
+
+    def send():
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise api.requests.ReadTimeout("timed out")
+        return _FakeResponse("ok")
+
+    assert _RetryProvider(send).send_once().text == "ok"
+    assert attempts["count"] == 2
+
+
+def test_request_with_retry_fails_certificate_errors_at_once(monkeypatch):
+    """An untrusted certificate will not fix itself, so it is never retried."""
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: pytest.fail("a permanent failure must not wait"))
+    attempts = {"count": 0}
+
+    def send():
+        attempts["count"] += 1
+        raise api.requests.exceptions.SSLError("certificate verify failed")
+
+    with pytest.raises(ProviderError, match="certificate verify failed"):
+        _RetryProvider(send).send_once()
+    assert attempts["count"] == 1
+
+
+def test_request_with_retry_honours_retry_after(monkeypatch):
+    """A Retry-After in seconds sets the wait before the next attempt."""
+    waits = []
+    monkeypatch.setattr(api.time, "sleep", waits.append)
+
+    _RetryProvider(_send_responses([_http_response(429, {"Retry-After": "7"}), _http_response(200)], [])).send_once()
+
+    assert waits == [7.0]
+
+
+def test_request_with_retry_bounds_retry_after(monkeypatch):
+    """A Retry-After beyond MAX_RETRY_BACKOFF waits no longer than the bound."""
+    waits = []
+    monkeypatch.setattr(api.time, "sleep", waits.append)
+
+    _RetryProvider(_send_responses([_http_response(429, {"Retry-After": "86400"}), _http_response(200)], [])).send_once()
+
+    assert waits == [Provider.MAX_RETRY_BACKOFF]
+
+
+def test_request_with_retry_backs_off_exponentially_within_bounds(monkeypatch):
+    """Without Retry-After each wait is a random share of a doubling, capped backoff."""
+    ceilings = []
+    monkeypatch.setattr(api.random, "uniform", lambda low, high: ceilings.append(high) or high)
+    monkeypatch.setattr(api.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(_RetryProvider, "MAX_ATTEMPTS", 5)
+    monkeypatch.setattr(_RetryProvider, "MAX_RETRY_BACKOFF", 15)
+
+    with pytest.raises(ProviderError):
+        _RetryProvider(_send_responses([_http_response(503) for _ in range(5)], [])).send_once()
+    assert ceilings == [5, 10, 15, 15]
+
+
+def test_request_with_retry_reports_the_body_without_the_api_key():
+    """The failure names the URL and the provider's explanation without echoing the API key."""
+    response = _http_response(401)
+    response.url = "https://example.com/geocode?key=SECRET"
+    response.raw = io.BytesIO(b'{"error": "Invalid API key SECRET"}')
+    provider = _RetryProvider(lambda: response)
+    provider.api_key = "SECRET"
+
+    with pytest.raises(ProviderError) as raised:
+        provider.send_once()
+    assert "key=***" in str(raised.value)
+    assert "Invalid API key ***" in str(raised.value)
+    assert "SECRET" not in str(raised.value)

@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterator, List, Tuple
 
 import requests
 
-from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, grade_accuracy, register
+from .api import AccuracyLevel, GeocodeResult, Provider, ProviderError, SourceRecord, grade_accuracy, register
 
 
 @register("census")
@@ -38,6 +38,7 @@ class CensusProvider(Provider):
     CACHE_VERSION = f"{BENCHMARK}/{VINTAGE}"
     BATCH_SIZE = 10000
     TIMEOUT = 300
+    MATCH_STATUSES = {"Match", "No_Match", "Tie"}
 
     RESPONSE_FIELDS = [
         "id",
@@ -75,17 +76,23 @@ class CensusProvider(Provider):
             yield from self._fetch_batch(records[start : start + self.BATCH_SIZE])
 
     def _fetch_batch(self, batch: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
-        """Posts one CSV batch, verifies its row count, and matches rows back by internal key."""
+        """
+        Posts one CSV batch, validates every row, and matches rows back by internal key.
+
+        The echoed ids must answer the submitted keys one-to-one, and the whole
+        batch is validated before any row is yielded, so a misaligned or
+        malformed response caches none of it.
+        """
         response = self._post_batch(batch)
         rows = [row for row in csv.reader(io.StringIO(response.text)) if row]
-        if len(rows) != len(batch):
-            raise ValueError(f"Census returned {len(rows)} rows for {len(batch)} submitted records; the service or benchmark may have changed")
+        records_by_key = {str(record.internal_key): record for record in batch}
+        if sorted(row[0] for row in rows) != sorted(records_by_key):
+            raise ProviderError(
+                f"Census returned ids that do not match the {len(batch)} submitted records one-to-one; the service or benchmark may have changed",
+                response.text,
+            )
 
-        records_by_key = {record.internal_key: record for record in batch}
-        for row in rows:
-            record = records_by_key.get(int(row[0]))
-            if record is not None:
-                yield record, self._build_raw(row)
+        yield from [(records_by_key[row[0]], self._build_raw(row)) for row in rows]
 
     def _post_batch(self, batch: List[SourceRecord]) -> requests.Response:
         """Posts one CSV batch through the retrying request helper."""
@@ -118,12 +125,14 @@ class CensusProvider(Provider):
 
     def _build_raw(self, row: List[str]) -> Dict[str, Any]:
         """
-        Names the positional fields of one response row, validating a match first.
+        Names the positional fields of one response row, validating its status and a match's layout first.
 
         The pinned layout is checked here, where the row arrives from the network,
         and the echoed id is dropped as it is only meaningful within this run.
         """
-        status = row[2] if len(row) > 2 else "No_Match"
+        status = row[2] if len(row) > 2 else ""
+        if status not in self.MATCH_STATUSES:
+            raise ProviderError(f"Census row has unrecognized match status {status!r}; pinned layout may have changed: {row!r}")
         if status == "Match":
             self._check_layout(row)
 
@@ -188,7 +197,7 @@ class CensusProvider(Provider):
         longer be trusted.
         """
         if len(row) != len(self.RESPONSE_FIELDS):
-            raise ValueError(
+            raise ProviderError(
                 f"Census match row has {len(row)} of {len(self.RESPONSE_FIELDS)} expected fields; pinned layout may have changed: {row!r}"
             )
 
@@ -197,7 +206,9 @@ class CensusProvider(Provider):
             float(longitude)
             float(latitude)
         except ValueError:
-            raise ValueError(f"Census match coordinates {row[5]!r} are not a numeric lon,lat pair; pinned layout may have changed: {row!r}") from None
+            raise ProviderError(
+                f"Census match coordinates {row[5]!r} are not a numeric lon,lat pair; pinned layout may have changed: {row!r}"
+            ) from None
 
     @staticmethod
     def _split_address(matched_address: str) -> List[str]:
