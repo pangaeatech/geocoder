@@ -6,6 +6,7 @@ Geocoder — provider base and shared types
 """
 
 import os
+import random
 import re
 import time
 from abc import ABC, abstractmethod
@@ -301,6 +302,33 @@ def cache_key(record: SourceRecord) -> str:
     return " ".join(record.address_string().split()).casefold()
 
 
+def excerpt(value: Any, limit: int = 200) -> str:
+    """Renders a response or payload as a bounded, single-line excerpt for an error message."""
+    text = " ".join((value if isinstance(value, str) else repr(value)).split())
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
+class ProviderError(Exception):
+    """
+    A provider failed to answer: the request was refused, the service failed,
+    or the response broke the shape the provider documents.
+
+    It is distinct from a no-match, which is an answer and is cached like any
+    other; a failure is never cached, so a later run asks again. The response
+    that failed, when given, is appended as a bounded excerpt.
+    """
+
+    def __init__(self, message: str, response: Any = None):
+        super().__init__(message if response is None else f"{message}: {excerpt(response)}")
+
+
+def is_location(value: Any) -> bool:
+    """Reports whether a decoded JSON value is a location with a numeric lat and lng."""
+    return isinstance(value, dict) and all(
+        isinstance(value.get(axis), (int, float)) and not isinstance(value.get(axis), bool) for axis in ("lat", "lng")
+    )
+
+
 PROVIDERS: Dict[str, Type["Provider"]] = {}
 T = TypeVar("T", bound="Provider")
 
@@ -324,6 +352,12 @@ class Provider(ABC):
     limits a source row imposes are handled once here so no provider repeats
     them.
 
+    Every provider honours one contract: ``_fetch`` yields only responses
+    validated against the provider's documented shape, a documented no-match
+    included, and raises ProviderError for anything else — a refused or failed
+    request, an embedded error, or a malformed response — so no failure is
+    cached or reported as a no-match.
+
     A subclass also declares CACHE_VERSION, which names everything about how it
     calls its API that a cached response depends on — the API version, and any
     dataset the call is pinned to. It tags the entries a provider writes, so a
@@ -336,6 +370,8 @@ class Provider(ABC):
     CACHE_VERSION: str = ""
     MAX_ATTEMPTS = 3
     RETRY_BACKOFF = 5
+    MAX_RETRY_BACKOFF = 60
+    RETRY_STATUSES = {408, 429, 500, 502, 503, 504}
     MAX_ACCURACY = AccuracyLevel.ROOFTOP
 
     def __init__(self, api_key: Optional[str] = None, cache: Optional[Cache] = None):
@@ -424,12 +460,14 @@ class Provider(ABC):
 
     def _request_with_retry(self, send: Callable[[], requests.Response]) -> requests.Response:
         """
-        Calls send(), retrying transient failures with a linear backoff.
+        Calls send(), retrying transient failures with a jittered exponential backoff.
 
-        Each attempt runs send() and raises for an HTTP error status; any
-        requests error is retried until MAX_ATTEMPTS is reached, sleeping
-        RETRY_BACKOFF seconds times the attempt number between tries. The final
-        failure is re-raised.
+        A dropped connection, a timeout, a rate limit and a temporary server
+        error are retried until MAX_ATTEMPTS is reached; any other failure is
+        permanent — a rejected key, an invalid request or an untrusted
+        certificate — and is raised at once. Between tries the wait is the server's Retry-After when it gives
+        one, otherwise a random share of a backoff that doubles from
+        RETRY_BACKOFF; either way it is bounded by MAX_RETRY_BACKOFF.
 
         Parameters
         ----------
@@ -443,21 +481,60 @@ class Provider(ABC):
 
         Raises
         ----------
-        requests.RequestException
-            If every attempt fails.
+        ProviderError
+            If the failure is permanent or every attempt fails.
         """
-        last_error: Optional[requests.RequestException] = None
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
             try:
                 response = send()
                 response.raise_for_status()
                 return response
             except requests.RequestException as error:
-                last_error = error
-                if attempt < self.MAX_ATTEMPTS:
-                    time.sleep(self.RETRY_BACKOFF * attempt)
-        assert last_error is not None
-        raise last_error
+                if attempt == self.MAX_ATTEMPTS or not self._is_transient(error):
+                    raise self._request_error(error) from error
+                time.sleep(self._retry_delay(error, attempt))
+        raise AssertionError("MAX_ATTEMPTS must be at least 1")
+
+    def _is_transient(self, error: requests.RequestException) -> bool:
+        """Reports whether a failed request may succeed if sent again."""
+        if isinstance(error, requests.exceptions.SSLError):
+            return False
+        if isinstance(error, (requests.ConnectionError, requests.Timeout)):
+            return True
+        return error.response is not None and error.response.status_code in self.RETRY_STATUSES
+
+    def _retry_delay(self, error: requests.RequestException, attempt: int) -> float:
+        """Returns the seconds to wait before the next attempt, honouring a Retry-After in seconds."""
+        retry_after = error.response.headers.get("Retry-After", "") if error.response is not None else ""
+        if retry_after.strip().isdigit():
+            return min(float(retry_after), self.MAX_RETRY_BACKOFF)
+        return random.uniform(0, min(self.MAX_RETRY_BACKOFF, self.RETRY_BACKOFF * 2 ** (attempt - 1)))
+
+    def _request_error(self, error: requests.RequestException) -> ProviderError:
+        """
+        Describes a failed request by its error and any body the provider sent back.
+
+        The body carries the provider's own explanation, such as a rejected key,
+        and the API key the request carried is removed from both.
+        """
+        body = error.response.text if error.response is not None else ""
+        return ProviderError(self._redact(f"{self.name} request failed: {error}"), self._redact(body) or None)
+
+    def _redact(self, text: str) -> str:
+        """Removes the API key from text bound for an error message."""
+        return text.replace(self.api_key, "***") if self.api_key else text
+
+    def _decode_json(self, response: requests.Response) -> Any:
+        """
+        Decodes a response body, naming the provider and status when it is not JSON.
+
+        A proxy page or truncated body would otherwise surface as a bare decoder
+        error that says nothing of where it came from.
+        """
+        try:
+            return response.json()
+        except ValueError as error:
+            raise ProviderError(f"{self.name} returned a non-JSON response (HTTP {response.status_code})", response.text) from error
 
 
 def resolve_api_key(api: str, cli_key: Optional[str]) -> Optional[str]:

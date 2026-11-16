@@ -22,6 +22,7 @@ from .api import (
     AccuracyLevel,
     GeocodeResult,
     Provider,
+    ProviderError,
     SourceRecord,
     resolve_api_key,
 )
@@ -899,7 +900,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     SystemExit
         If the input file is missing, the output file already exists, a read-only
         cache is missing or unusable, the api is unknown, a required API key is
-        not configured, or no provider and no check was asked for.
+        not configured, no provider and no check was asked for, or the provider
+        failed to answer.
     """
     load_dotenv()
     args = parse_args(argv)
@@ -924,6 +926,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             recheck_workbook(args.infile, args.outfile, worksheet=args.worksheet, options=options)
         else:
             process_workbook(args.infile, args.outfile, provider, worksheet=args.worksheet, options=options)
+    except ProviderError as error:
+        raise SystemExit(f"error: {error}") from error
     finally:
         if provider is not None:
             provider.cache.close()

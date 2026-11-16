@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterator, List, Tuple
 
 import requests
 
-from .api import AccuracyLevel, GeocodeResult, Provider, SourceRecord, format_street_address, grade_accuracy, register
+from .api import AccuracyLevel, GeocodeResult, Provider, ProviderError, SourceRecord, format_street_address, grade_accuracy, is_location, register
 
 
 @register("geocodio")
@@ -88,13 +88,20 @@ class GeocodioProvider(Provider):
             yield from self._fetch_batch(records[start : start + self.BATCH_SIZE])
 
     def _fetch_batch(self, batch: List[SourceRecord]) -> Iterator[Tuple[SourceRecord, Dict[str, Any]]]:
-        """Posts one batch, verifies its entry count, and matches entries back by position."""
+        """
+        Posts one batch, validates every entry, and matches entries back by position.
+
+        The whole batch is validated before any entry is yielded, so a failure
+        caches none of it.
+        """
         entries = self._post_batch(batch)
         if len(entries) != len(batch):
-            raise ValueError(f"Geocodio returned {len(entries)} entries for {len(batch)} submitted records; the batch response may have changed")
+            raise ProviderError(f"Geocodio returned {len(entries)} entries for {len(batch)} submitted records; the batch response may have changed")
+        for entry in entries:
+            self._check_entry(entry)
         yield from zip(batch, entries)
 
-    def _post_batch(self, batch: List[SourceRecord]) -> List[Dict]:
+    def _post_batch(self, batch: List[SourceRecord]) -> List[Any]:
         """Posts one batch through the retrying request helper and returns the ordered result entries."""
         payload = [record.address_string() for record in batch]
         response = self._request_with_retry(
@@ -105,7 +112,33 @@ class GeocodioProvider(Provider):
                 timeout=self.TIMEOUT,
             )
         )
-        return response.json().get("results", [])
+        body = self._decode_json(response)
+        entries = body.get("results") if isinstance(body, dict) else None
+        if not isinstance(entries, list):
+            raise ProviderError("Geocodio returned no batch results", body)
+        return entries
+
+    @staticmethod
+    def _check_entry(entry: Any) -> None:
+        """
+        Fails loudly unless an entry is a no-match or a match parse can read.
+
+        Geocodio reports a failed query inside an otherwise successful batch,
+        as an error in place of its results; that is raised rather than read as
+        a no-match. A match must lead with a candidate carrying a numeric
+        location and its address components.
+        """
+        response = entry.get("response") if isinstance(entry, dict) else None
+        if isinstance(response, dict) and "error" in response:
+            raise ProviderError(f"Geocodio failed to geocode {entry.get('query', '')!r}", response["error"])
+
+        candidates = response.get("results") if isinstance(response, dict) else None
+        if candidates == []:
+            return
+
+        match = candidates[0] if isinstance(candidates, list) else None
+        if not (isinstance(match, dict) and is_location(match.get("location")) and isinstance(match.get("address_components"), dict)):
+            raise ProviderError("Geocodio returned a malformed batch entry", entry)
 
     def parse(self, raw: Dict[str, Any]) -> GeocodeResult:
         """
