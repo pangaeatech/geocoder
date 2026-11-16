@@ -42,21 +42,19 @@ def test_register_adds_to_registry():
         del api.PROVIDERS["temp_provider"]
 
 
-def test_resolve_api_key_cli_wins(monkeypatch):
+def test_resolve_api_key_cli_wins():
     """A command-line key takes precedence over the environment variable."""
-    monkeypatch.setenv("GEOCODIO_API_KEY", "from_env")
-    assert resolve_api_key("geocodio", "from_cli") == "from_cli"
+    assert resolve_api_key("geocodio", "from_cli", {"GEOCODIO_API_KEY": "from_env"}) == "from_cli"
 
 
-def test_resolve_api_key_env_fallback(monkeypatch):
+def test_resolve_api_key_env_fallback():
     """The environment variable is used when no command-line key is given."""
-    monkeypatch.setenv("GEOCODIO_API_KEY", "from_env")
-    assert resolve_api_key("geocodio", None) == "from_env"
+    assert resolve_api_key("geocodio", None, {"GEOCODIO_API_KEY": "from_env"}) == "from_env"
 
 
 def test_resolve_api_key_none_for_keyless_provider():
     """A provider without a configured env var resolves to no key."""
-    assert resolve_api_key("census", None) is None
+    assert resolve_api_key("census", None, {}) is None
 
 
 def test_grade_accuracy_uses_most_specific_field():

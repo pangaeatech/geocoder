@@ -5,13 +5,12 @@
 Geocoder — provider base and shared types
 """
 
-import os
 import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple, Type, TypeVar
 
 import requests
 
@@ -460,7 +459,7 @@ class Provider(ABC):
         raise last_error
 
 
-def resolve_api_key(api: str, cli_key: Optional[str]) -> Optional[str]:
+def resolve_api_key(api: str, cli_key: Optional[str], environ: Mapping[str, str]) -> Optional[str]:
     """
     Resolves an API key, preferring --apiKey over the provider's environment variable.
 
@@ -470,6 +469,8 @@ def resolve_api_key(api: str, cli_key: Optional[str]) -> Optional[str]:
         The provider name whose environment variable is consulted.
     cli_key : Optional[str]
         The key supplied on the command line, if any.
+    environ : Mapping[str, str]
+        The variables to look the provider's key up in.
 
     Return
     ----------
@@ -480,4 +481,4 @@ def resolve_api_key(api: str, cli_key: Optional[str]) -> Optional[str]:
         return cli_key
 
     env_var = KEY_ENV_VARS.get(api)
-    return os.environ.get(env_var) if env_var else None
+    return environ.get(env_var) if env_var else None

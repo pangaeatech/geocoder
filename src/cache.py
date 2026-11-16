@@ -16,7 +16,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
 
 DEFAULT_CACHE_FILE = "geocoder-cache.sqlite"
 
-REQUIRED_COLUMNS = ("query", "version", "response")
+READ_COLUMNS = ("query", "version", "response")
+WRITE_COLUMNS = READ_COLUMNS + ("fetched_at",)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS {table} (
@@ -51,9 +52,17 @@ class Cache:
     def __init__(self, api: str, version: str, path: Optional[str] = None, read_paths: Sequence[str] = ()):
         self._api = api
         self._version = version
-        self._writer = self._open_writer(path) if path else None
-        self._readers = [self._open_reader(read_path) for read_path in read_paths]
+        self._writer: Optional[sqlite3.Connection] = None
+        self._readers: List[sqlite3.Connection] = []
         self._uncommitted = 0
+        try:
+            for read_path in read_paths:
+                self._readers.append(self._open_reader(read_path))
+            if path:
+                self._writer = self._open_writer(path)
+        except BaseException:
+            self.close()
+            raise
 
     @property
     def _table(self) -> str:
@@ -64,6 +73,10 @@ class Cache:
     def _open_writer(self, path: str) -> sqlite3.Connection:
         """
         Opens the read-write cache, creating the file and this provider's table when absent.
+
+        A table of this provider's name already in the file is checked for every
+        column lookups and writes use, so an incompatible one is refused before
+        any work is done rather than failing on its first lookup.
 
         Parameters
         ----------
@@ -78,16 +91,10 @@ class Cache:
         Raises
         ----------
         ValueError
-            If the path names an existing file that is not a SQLite database.
+            If the file cannot be opened, is not a SQLite database, or holds a
+            table for this provider without the columns a cache needs.
         """
-        connection = sqlite3.connect(path)
-        try:
-            connection.execute(SCHEMA.format(table=self._table))
-            connection.commit()
-        except sqlite3.DatabaseError as error:
-            connection.close()
-            raise ValueError(f"'{path}' cannot be used as a cache: {error}") from error
-        return connection
+        return self._open(path, read_only=False)
 
     def _open_reader(self, path: str) -> sqlite3.Connection:
         """
@@ -112,25 +119,86 @@ class Cache:
         Raises
         ----------
         ValueError
-            If the file is not a SQLite database, or holds no usable table for
-            this provider.
+            If the file cannot be opened, is not a SQLite database, or holds no
+            usable table for this provider.
         """
-        connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+        return self._open(path, read_only=True)
+
+    def _open(self, path: str, read_only: bool) -> sqlite3.Connection:
+        """
+        Connects to a cache file, closing it again if it cannot serve this provider.
+
+        A read-only file is opened through a URI so SQLite refuses every write;
+        a writable one is opened by its literal path and gains this provider's
+        table when it lacks one.
+
+        Parameters
+        ----------
+        path : str
+            The path of the cache file.
+        read_only : bool
+            Whether to open the file read-only rather than read-write.
+
+        Return
+        ----------
+        sqlite3.Connection
+            A connection whose provider table carries every required column.
+
+        Raises
+        ----------
+        ValueError
+            If the file cannot be opened or cannot serve this provider.
+        """
         try:
+            if read_only:
+                connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+            else:
+                connection = sqlite3.connect(path)
+        except sqlite3.Error as error:
+            raise ValueError(f"'{path}' cannot be opened as a cache: {error}") from error
+
+        try:
+            self._check_table(connection, path, READ_COLUMNS if read_only else WRITE_COLUMNS, create=not read_only)
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    def _check_table(self, connection: sqlite3.Connection, path: str, required: Sequence[str], create: bool) -> None:
+        """
+        Confirms this provider's table exists and carries the given columns.
+
+        Parameters
+        ----------
+        connection : sqlite3.Connection
+            The open cache file.
+        path : str
+            The cache file's path as the user gave it, used in error messages.
+        required : Sequence[str]
+            The columns the table must carry.
+        create : bool
+            Whether to create the table when the file lacks it.
+
+        Raises
+        ----------
+        ValueError
+            If the file is not a SQLite database, or its table is absent or
+            lacks any of the required columns.
+        """
+        try:
+            if create:
+                connection.execute(SCHEMA.format(table=self._table))
+                connection.commit()
             columns = {row[1] for row in connection.execute(f"PRAGMA table_info({self._table})")}
         except sqlite3.DatabaseError as error:
-            connection.close()
-            raise ValueError(f"'{path}' is not a readable SQLite database: {error}") from error
+            raise ValueError(f"'{path}' is not a usable SQLite database: {error}") from error
 
         if not columns:
-            connection.close()
             raise ValueError(f"'{path}' holds no cached '{self._api}' responses")
 
-        missing = [column for column in REQUIRED_COLUMNS if column not in columns]
+        missing = [column for column in required if column not in columns]
         if missing:
-            connection.close()
             raise ValueError(f"'{path}' is not a geocoder cache (its '{self._api}' table is missing {', '.join(missing)})")
-        return connection
 
     def _connections(self) -> Iterator[sqlite3.Connection]:
         """Yields the writable cache first, then each read-only cache in the order given."""
@@ -144,7 +212,9 @@ class Cache:
 
         The first file holding a key under the current version wins; keys with
         no such response are absent from the result, whether they were never
-        stored or were stored under a version this run no longer calls.
+        stored, were stored under a version this run no longer calls, or hold
+        a response that is not valid JSON. A corrupt entry is treated like any
+        other miss, so a later file or the provider answers in its place.
 
         Parameters
         ----------
@@ -170,7 +240,10 @@ class Cache:
                     [self._version, *chunk],
                 )
                 for key, response in rows:
-                    found[key] = json.loads(response)
+                    try:
+                        found[key] = json.loads(response)
+                    except (TypeError, ValueError):
+                        continue
             outstanding = [key for key in outstanding if key not in found]
 
         return found
